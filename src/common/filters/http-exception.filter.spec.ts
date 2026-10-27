@@ -22,10 +22,12 @@ function makeRequest(overrides: Partial<Request> = {}): Request {
 function makeResponse(): {
   status: ReturnType<typeof vi.fn>;
   json: ReturnType<typeof vi.fn>;
+  setHeader: ReturnType<typeof vi.fn>;
 } {
   const response = {
     status: vi.fn(),
     json: vi.fn(),
+    setHeader: vi.fn(),
   };
   response.status.mockReturnValue(response);
   return response;
