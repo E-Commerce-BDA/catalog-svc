@@ -1,5 +1,14 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { HealthModule } from './health/health.module.js';
+import { DbModule } from './db/db.module.js';
+import { AuthModule } from './auth/auth.module.js';
+import { CommonModule } from './common/common.module.js';
+import { CategoriesModule } from './categories/categories.module.js';
+import { BrandsModule } from './brands/brands.module.js';
+import { ProductsModule } from './products/products.module.js';
+import { InventoryModule } from './inventory/inventory.module.js';
+import { InternalModule } from './internal/internal.module.js';
 import Joi from 'joi';
 
 @Module({
@@ -12,6 +21,15 @@ import Joi from 'joi';
         JWT_SECRET: Joi.string().min(32).required(),
       }),
     }),
+    HealthModule,
+    DbModule,
+    AuthModule,
+    CommonModule,
+    CategoriesModule,
+    BrandsModule,
+    ProductsModule,
+    InventoryModule,
+    InternalModule,
   ],
 })
 export class AppModule {}
