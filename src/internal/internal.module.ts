@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
+import { InventoryModule } from '../inventory/inventory.module.js';
 import { InternalController } from './internal.controller.js';
-import { InternalService } from './internal.service.js';
 
 @Module({
+  imports: [InventoryModule],
   controllers: [InternalController],
-  providers: [InternalService]
 })
 export class InternalModule {}
