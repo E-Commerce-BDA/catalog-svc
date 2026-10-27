@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -36,6 +37,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Get()
+  @Header('Cache-Control', 'public, max-age=60')
   async getProducts(
     @Query() query: ProductQueryDto,
   ): Promise<{ data: ProductListItem[]; nextCursor: string | null }> {
@@ -43,6 +45,7 @@ export class ProductsController {
   }
 
   @Get('id/:id')
+  @Header('Cache-Control', 'public, max-age=60')
   async getProductById(
     @Param('id') id: string,
   ): Promise<{ product: ProductDetail }> {
@@ -51,6 +54,7 @@ export class ProductsController {
   }
 
   @Get(':slug')
+  @Header('Cache-Control', 'public, max-age=60')
   async getProductBySlug(
     @Param('slug') slug: string,
   ): Promise<{ product: ProductDetail }> {
