@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   NotFoundException,
   Post,
   Query,
@@ -26,6 +27,7 @@ export class InternalController {
   constructor(private readonly inventoryService: InventoryService) {}
 
   @Get('stock')
+  @Header('Cache-Control', 'no-store')
   async getStock(@Query() query: StockQueryDto): Promise<StockLevel> {
     const stockLevel = await this.inventoryService.getStock(
       query.productId,
@@ -42,6 +44,7 @@ export class InternalController {
   }
 
   @Post('stock/reserve')
+  @Header('Cache-Control', 'no-store')
   async reserveStock(
     @Body() dto: ReserveStockDto,
   ): Promise<StockReservationResult> {
@@ -49,6 +52,7 @@ export class InternalController {
   }
 
   @Post('stock/release')
+  @Header('Cache-Control', 'no-store')
   async releaseStock(
     @Body() dto: ReleaseStockDto,
   ): Promise<StockReleaseResult> {
@@ -56,6 +60,7 @@ export class InternalController {
   }
 
   @Get('products')
+  @Header('Cache-Control', 'no-store')
   async getProducts(
     @Query('ids') idsParam?: string,
   ): Promise<{ data: CatalogProductSnapshot[] }> {
