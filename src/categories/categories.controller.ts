@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -28,6 +29,7 @@ export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   @Get()
+  @Header('Cache-Control', 'public, max-age=60')
   async getCategories(
     @Query() query: CategoryQueryDto,
   ): Promise<{ data: Category[] | CategoryTreeItem[] }> {
@@ -35,13 +37,27 @@ export class CategoriesController {
     return { data: categories };
   }
 
+  @Get('navbar')
+  @Header(
+    'Cache-Control',
+    'public, max-age=60, s-maxage=300, stale-while-revalidate=600',
+  )
+  async getNavbarCategories(): Promise<{ data: Category[] }> {
+    const categories = await this.categoriesService.getCategories({
+      navbar: 'true',
+    });
+    return { data: categories as Category[] };
+  }
+
   @Get('tree')
+  @Header('Cache-Control', 'public, max-age=60')
   async getCategoryTree(): Promise<{ data: CategoryTreeItem[] }> {
     const tree = await this.categoriesService.getCategoryTree();
     return { data: tree };
   }
 
   @Get(':slug')
+  @Header('Cache-Control', 'public, max-age=60')
   async getCategoryBySlug(
     @Param('slug') slug: string,
   ): Promise<{ category: Category }> {
