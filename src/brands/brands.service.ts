@@ -41,7 +41,14 @@ export class BrandsService {
     }
 
     try {
-      return await this.repository.create({ ...dto, slug });
+      return await this.repository.create({
+        name: dto.name,
+        slug,
+        logoUrl: dto.logoUrl,
+        description: dto.description,
+        isActive: dto.isActive,
+        sortOrder: dto.sortOrder,
+      });
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException(`Brand with slug '${slug}' already exists`);
@@ -66,8 +73,12 @@ export class BrandsService {
     }
 
     const updated = await this.repository.update(id, {
-      ...dto,
-      ...(slug ? { slug } : {}),
+      name: dto.name,
+      slug: slug ?? dto.slug,
+      logoUrl: dto.logoUrl,
+      description: dto.description,
+      isActive: dto.isActive,
+      sortOrder: dto.sortOrder,
     });
 
     if (!updated) {
