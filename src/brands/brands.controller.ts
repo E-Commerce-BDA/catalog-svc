@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Param,
@@ -25,12 +26,14 @@ export class BrandsController {
   constructor(private readonly brandsService: BrandsService) {}
 
   @Get()
+  @Header('Cache-Control', 'public, max-age=60')
   async getBrands(@Query() query: BrandQueryDto): Promise<{ data: Brand[] }> {
     const brands = await this.brandsService.getBrands(query);
     return { data: brands };
   }
 
   @Get(':slug')
+  @Header('Cache-Control', 'public, max-age=60')
   async getBrandBySlug(@Param('slug') slug: string): Promise<{ brand: Brand }> {
     const brand = await this.brandsService.getBrandBySlug(slug);
     return { brand };
