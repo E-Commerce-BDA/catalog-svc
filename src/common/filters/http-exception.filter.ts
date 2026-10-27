@@ -72,6 +72,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
     };
 
+    if (typeof response.setHeader === 'function') {
+      response.setHeader('x-request-id', requestId);
+    }
     response.status(status).json(envelope);
   }
 
