@@ -77,7 +77,19 @@ export class CategoriesService {
     }
 
     try {
-      return await this.repository.create({ ...dto, slug });
+      return await this.repository.create({
+        name: dto.name,
+        slug,
+        parentId: dto.parentId,
+        description: dto.description,
+        imageUrl: dto.imageUrl,
+        isActive: dto.isActive,
+        showInNavbar: dto.showInNavbar,
+        showInMegamenu: dto.showInMegamenu,
+        megamenuShowImages: dto.megamenuShowImages,
+        sortOrder: dto.sortOrder,
+        settings: dto.settings,
+      });
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException(`Category with slug '${slug}' already exists`);
@@ -112,8 +124,17 @@ export class CategoriesService {
     }
 
     const updated = await this.repository.update(id, {
-      ...dto,
-      ...(slug ? { slug } : {}),
+      name: dto.name,
+      slug: slug ?? dto.slug,
+      parentId: dto.parentId,
+      description: dto.description,
+      imageUrl: dto.imageUrl,
+      isActive: dto.isActive,
+      showInNavbar: dto.showInNavbar,
+      showInMegamenu: dto.showInMegamenu,
+      megamenuShowImages: dto.megamenuShowImages,
+      sortOrder: dto.sortOrder,
+      settings: dto.settings,
     });
 
     if (!updated) {
