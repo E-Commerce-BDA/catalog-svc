@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Post,
@@ -23,6 +24,7 @@ export class InventoryController {
   @Post(':id/stock')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
+  @Header('Cache-Control', 'no-store')
   async adjustStock(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: AdjustStockDto,
@@ -33,6 +35,7 @@ export class InventoryController {
   @Get(':id/stock-movements')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
+  @Header('Cache-Control', 'no-store')
   async getStockMovements(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Query() query: StockMovementQueryDto,
