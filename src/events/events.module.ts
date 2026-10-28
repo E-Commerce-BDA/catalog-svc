@@ -24,3 +24,4 @@ import { EventsService } from './events.service.js';
   exports: [EVENT_BUS_TOKEN, EventsService],
 })
 export class EventsModule {}
+

@@ -5,3 +5,4 @@ export interface IEventBus {
 }
 
 export const EVENT_BUS_TOKEN = Symbol('EVENT_BUS_TOKEN');
+

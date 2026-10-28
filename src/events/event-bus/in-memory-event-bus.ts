@@ -26,3 +26,4 @@ export class InMemoryEventBus implements IEventBus {
     this.publishedEvents.length = 0;
   }
 }
+
