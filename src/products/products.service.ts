@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { slugify } from '../categories/categories.service.js';
+import { EventsService } from '../events/events.service.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto } from './dto/create-option.dto.js';
@@ -26,7 +27,10 @@ import {
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly repository: ProductsRepository) {}
+  constructor(
+    private readonly repository: ProductsRepository,
+    private readonly eventsService: EventsService,
+  ) {}
 
   async getProducts(
     query: ProductQueryDto = {},
@@ -71,7 +75,7 @@ export class ProductsService {
     }
 
     try {
-      return await this.repository.create({
+      const created = await this.repository.create({
         sku: dto.sku,
         name: dto.name,
         slug,
@@ -90,6 +94,25 @@ export class ProductsService {
         externalId: dto.externalId,
         weightG: dto.weightG,
       });
+
+      await this.eventsService.publishProductUpdated({
+        productId: created.id,
+        sku: created.sku,
+        name: created.name,
+        slug: created.slug,
+        description: created.description ?? undefined,
+        categoryId: created.category?.id ?? undefined,
+        categorySlug: created.category?.slug ?? undefined,
+        brandId: created.brand?.id ?? undefined,
+        brandName: created.brand?.name ?? undefined,
+        price: created.price,
+        stock: created.stock,
+        imageUrl: created.images?.[0]?.url,
+        status: created.status === 'active' ? 'active' : 'inactive',
+        updatedAt: created.updatedAt,
+      });
+
+      return created;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException('Product SKU or slug conflict');
@@ -142,13 +165,43 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${id}' not found`);
     }
 
+    await this.eventsService.publishProductUpdated({
+      productId: updated.id,
+      sku: updated.sku,
+      name: updated.name,
+      slug: updated.slug,
+      description: updated.description ?? undefined,
+      categoryId: updated.category?.id ?? undefined,
+      categorySlug: updated.category?.slug ?? undefined,
+      brandId: updated.brand?.id ?? undefined,
+      brandName: updated.brand?.name ?? undefined,
+      price: updated.price,
+      stock: updated.stock,
+      imageUrl: updated.images?.[0]?.url,
+      status: updated.status === 'active' ? 'active' : 'inactive',
+      updatedAt: updated.updatedAt,
+    });
+
     return updated;
   }
 
   async deleteProduct(id: string): Promise<void> {
+    const existing = await this.repository.findById(id);
     const deleted = await this.repository.softDelete(id);
     if (!deleted) {
       throw new NotFoundException(`Product with id '${id}' not found`);
+    }
+
+    if (existing) {
+      await this.eventsService.publishProductUpdated({
+        productId: existing.id,
+        sku: existing.sku,
+        name: existing.name,
+        slug: existing.slug,
+        price: existing.price,
+        status: 'inactive',
+        updatedAt: new Date().toISOString(),
+      });
     }
   }
 

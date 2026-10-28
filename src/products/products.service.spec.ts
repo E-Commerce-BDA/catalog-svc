@@ -3,12 +3,16 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { EventsService } from '../events/events.service.js';
 import { ProductsRepository } from './products.repository.js';
 import { ProductsService } from './products.service.js';
 import { ProductDetail, ProductListItem } from './products.types.js';
 
 describe('ProductsService', () => {
   let service: ProductsService;
+  let eventsService: {
+    publishProductUpdated: ReturnType<typeof vi.fn>;
+  };
   let repository: {
     findList: ReturnType<typeof vi.fn>;
     findDetail: ReturnType<typeof vi.fn>;
@@ -99,7 +103,13 @@ describe('ProductsService', () => {
       createDiscount: vi.fn(),
       deleteDiscount: vi.fn(),
     };
-    service = new ProductsService(repository as unknown as ProductsRepository);
+    eventsService = {
+      publishProductUpdated: vi.fn(),
+    };
+    service = new ProductsService(
+      repository as unknown as ProductsRepository,
+      eventsService as unknown as EventsService,
+    );
   });
 
   it('delegates getProducts to findList', async () => {

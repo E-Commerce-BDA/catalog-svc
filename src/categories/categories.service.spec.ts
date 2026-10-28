@@ -3,12 +3,16 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { EventsService } from '../events/events.service.js';
 import { CategoriesRepository } from './categories.repository.js';
 import { CategoriesService } from './categories.service.js';
 import { Category } from './categories.types.js';
 
 describe('CategoriesService', () => {
   let service: CategoriesService;
+  let eventsService: {
+    publishCategoryUpdated: ReturnType<typeof vi.fn>;
+  };
   let repository: {
     findNavbar: ReturnType<typeof vi.fn>;
     findAll: ReturnType<typeof vi.fn>;
@@ -63,7 +67,13 @@ describe('CategoriesService', () => {
       update: vi.fn(),
       softDelete: vi.fn(),
     };
-    service = new CategoriesService(repository as unknown as CategoriesRepository);
+    eventsService = {
+      publishCategoryUpdated: vi.fn(),
+    };
+    service = new CategoriesService(
+      repository as unknown as CategoriesRepository,
+      eventsService as unknown as EventsService,
+    );
   });
 
   it('retrieves navbar categories using findNavbar', async () => {

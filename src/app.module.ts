@@ -9,6 +9,7 @@ import { BrandsModule } from './brands/brands.module.js';
 import { ProductsModule } from './products/products.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
 import { InternalModule } from './internal/internal.module.js';
+import { EventsModule } from './events/events.module.js';
 import Joi from 'joi';
 
 @Module({
@@ -19,8 +20,10 @@ import Joi from 'joi';
         PORT: Joi.number().default(4020),
         DATABASE_URL: Joi.string().uri().required(),
         JWT_SECRET: Joi.string().min(32).required(),
+        KAFKA_BROKERS: Joi.string().default('localhost:9092'),
       }),
     }),
+    EventsModule,
     HealthModule,
     DbModule,
     AuthModule,
