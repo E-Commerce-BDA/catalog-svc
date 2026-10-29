@@ -80,8 +80,10 @@ describe('Products & PDP (e2e)', () => {
   });
 
   it('1. GET /api/v1/catalog/products lists active products and excludes archived', async () => {
+    // 100 is the maximum page size: the shared database keeps accumulating
+    // fixtures from other e2e files, which would push the seeds off page 1.
     const res = await request(app.getHttpServer())
-      .get('/api/v1/catalog/products')
+      .get('/api/v1/catalog/products?limit=100')
       .expect(200);
 
     expect(Array.isArray(res.body.data)).toBe(true);
@@ -93,7 +95,7 @@ describe('Products & PDP (e2e)', () => {
 
   it('2. GET /api/v1/products dual route functions identically', async () => {
     const res = await request(app.getHttpServer())
-      .get('/api/v1/products')
+      .get('/api/v1/products?limit=100')
       .expect(200);
 
     expect(Array.isArray(res.body.data)).toBe(true);

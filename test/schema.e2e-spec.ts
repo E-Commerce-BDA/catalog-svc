@@ -30,7 +30,7 @@ describe('Catalog Schema (e2e)', () => {
     await closePool();
   });
 
-  it('1. all 13 base tables exist in catalog schema', async () => {
+  it('1. all 14 base tables exist in catalog schema', async () => {
     const { rows } = await client.query<{ table_name: string }>(
       `SELECT table_name 
        FROM information_schema.tables 
@@ -53,6 +53,7 @@ describe('Catalog Schema (e2e)', () => {
       'products',
       'reviews',
       'stock_movements',
+      'stock_reservations',
     ]);
   });
 
@@ -89,6 +90,9 @@ describe('Catalog Schema (e2e)', () => {
       'idx_pav_attribute_id',
       'idx_stock_movements_product_time',
       'idx_stock_movements_created_at',
+      'idx_stock_movements_reservation',
+      'idx_stock_reservations_order',
+      'idx_stock_reservations_due',
       'idx_product_discounts_active',
       'idx_discounts_active_range',
       'idx_reviews_product_approved',
@@ -221,7 +225,9 @@ describe('Catalog Schema (e2e)', () => {
         INSERT INTO catalog.product_discounts (product_id, discount_type, value, starts_at, ends_at)
         VALUES ('${productId}', 'bogo', 10, now(), now() + interval '1 day')
       `),
-    ).rejects.toThrow(/violates check constraint "product_discounts_type_check"/);
+    ).rejects.toThrow(
+      /violates check constraint "product_discounts_type_check"/,
+    );
 
     await client.query('ROLLBACK TO SAVEPOINT test_sp');
     await client.query('SAVEPOINT test_sp');
@@ -232,7 +238,9 @@ describe('Catalog Schema (e2e)', () => {
         INSERT INTO catalog.product_discounts (product_id, discount_type, value, starts_at, ends_at)
         VALUES ('${productId}', 'percent', 105, now(), now() + interval '1 day')
       `),
-    ).rejects.toThrow(/violates check constraint "product_discounts_value_check"/);
+    ).rejects.toThrow(
+      /violates check constraint "product_discounts_value_check"/,
+    );
   });
 
   it('11. enforces stock movements reason check', async () => {
@@ -246,13 +254,16 @@ describe('Catalog Schema (e2e)', () => {
         INSERT INTO catalog.stock_movements (product_id, qty_change, reason, qty_after)
         VALUES ('${productId}', 10, 'magic_addition', 10)
       `),
-    ).rejects.toThrow(/violates check constraint "stock_movements_reason_check"/);
+    ).rejects.toThrow(
+      /violates check constraint "stock_movements_reason_check"/,
+    );
   });
 
   it('12. verifies updated_at trigger updates timestamp on modified product', async () => {
-    const { rows: prodRows } = await client.query<{ id: string; updated_at: string }>(
-      `SELECT id, updated_at FROM catalog.products LIMIT 1;`,
-    );
+    const { rows: prodRows } = await client.query<{
+      id: string;
+      updated_at: string;
+    }>(`SELECT id, updated_at FROM catalog.products LIMIT 1;`);
     const productId = prodRows[0].id;
     const originalUpdatedAt = new Date(prodRows[0].updated_at).getTime();
 
@@ -290,6 +301,40 @@ describe('Catalog Schema (e2e)', () => {
     );
 
     expect(rows.length).toBe(1);
-    expect(rows[0].indexdef).toContain("WHERE ((status)::text = 'active'::text)");
+    expect(rows[0].indexdef).toContain(
+      "WHERE ((status)::text = 'active'::text)",
+    );
+  });
+
+  it('15. enforces one reservation per order but leaves null order ids unconstrained', async () => {
+    const orderId = randomUUID();
+    const insert = `INSERT INTO catalog.stock_reservations (id, order_id, status, expires_at)
+                    VALUES ($1::uuid, $2::uuid, 'held', now() + interval '15 minutes')`;
+
+    await client.query(insert, [randomUUID(), orderId]);
+
+    // A failed statement aborts the enclosing test transaction, so isolate it.
+    await client.query('SAVEPOINT conflict_sp');
+    await expect(client.query(insert, [randomUUID(), orderId])).rejects.toThrow(
+      /idx_stock_reservations_order/,
+    );
+    await client.query('ROLLBACK TO SAVEPOINT conflict_sp');
+
+    // Checkout reserves before the order exists, so several null order ids must
+    // be allowed (the partial predicate is `WHERE order_id IS NOT NULL`).
+    await client.query(insert, [randomUUID(), null]);
+    await client.query(insert, [randomUUID(), null]);
+  });
+
+  it('16. exposes stock_movements.reservation_id', async () => {
+    const { rows } = await client.query<{ column_name: string }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog'
+         AND table_name = 'stock_movements'
+         AND column_name = 'reservation_id';`,
+    );
+
+    expect(rows).toHaveLength(1);
   });
 });
