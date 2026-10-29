@@ -25,35 +25,6 @@ export interface StockLevel {
   available: boolean;
 }
 
-export interface StockReservationItem {
-  productId: string;
-  variantId?: string | null;
-  quantity: number;
-}
-
-export interface ReservedItemResult {
-  productId: string;
-  variantId: string | null;
-  quantity: number;
-  remainingStock: number;
-}
-
-export interface StockReservationResult {
-  reservationId: string;
-  items: ReservedItemResult[];
-}
-
-export interface ReleasedItemResult {
-  productId: string;
-  variantId: string | null;
-  quantity: number;
-  restoredStock: number;
-}
-
-export interface StockReleaseResult {
-  items: ReleasedItemResult[];
-}
-
 export interface CatalogProductSnapshot {
   productId: string;
   variantId: string | null;

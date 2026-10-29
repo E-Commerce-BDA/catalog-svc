@@ -1,4 +1,3 @@
-import { BadRequestException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InventoryRepository } from './inventory.repository.js';
 import { InventoryService } from './inventory.service.js';
@@ -9,8 +8,6 @@ describe('InventoryService', () => {
     getStock: ReturnType<typeof vi.fn>;
     adjustStock: ReturnType<typeof vi.fn>;
     getStockMovements: ReturnType<typeof vi.fn>;
-    reserveStock: ReturnType<typeof vi.fn>;
-    releaseStock: ReturnType<typeof vi.fn>;
     getProductSnapshots: ReturnType<typeof vi.fn>;
   };
 
@@ -19,8 +16,6 @@ describe('InventoryService', () => {
       getStock: vi.fn(),
       adjustStock: vi.fn(),
       getStockMovements: vi.fn(),
-      reserveStock: vi.fn(),
-      releaseStock: vi.fn(),
       getProductSnapshots: vi.fn(),
     };
     service = new InventoryService(repo as unknown as InventoryRepository);
@@ -69,46 +64,6 @@ describe('InventoryService', () => {
     });
   });
 
-  describe('reserveStock', () => {
-    it('should throw BadRequestException if items array is empty', async () => {
-      await expect(service.reserveStock({ items: [] })).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should delegate to repo.reserveStock', async () => {
-      repo.reserveStock.mockResolvedValueOnce({
-        reservationId: 'res-1',
-        items: [{ productId: 'prod-1', variantId: null, quantity: 2, remainingStock: 8 }],
-      });
-
-      const res = await service.reserveStock({
-        items: [{ productId: 'prod-1', quantity: 2 }],
-      });
-      expect(res.reservationId).toBe('res-1');
-      expect(res.items[0].remainingStock).toBe(8);
-    });
-  });
-
-  describe('releaseStock', () => {
-    it('should throw BadRequestException if items array is empty', async () => {
-      await expect(service.releaseStock({ items: [] })).rejects.toThrow(
-        BadRequestException,
-      );
-    });
-
-    it('should delegate to repo.releaseStock', async () => {
-      repo.releaseStock.mockResolvedValueOnce({
-        items: [{ productId: 'prod-1', variantId: null, quantity: 2, restoredStock: 10 }],
-      });
-
-      const res = await service.releaseStock({
-        items: [{ productId: 'prod-1', quantity: 2 }],
-      });
-      expect(res.items[0].restoredStock).toBe(10);
-    });
-  });
-
   describe('getProductSnapshots', () => {
     it('should return empty array for empty ids', async () => {
       const res = await service.getProductSnapshots([]);
@@ -123,6 +78,7 @@ describe('InventoryService', () => {
           variantId: null,
           productName: 'Tee',
           productSlug: 'tee',
+          sku: 'SKU-TEE-1',
           imageUrl: null,
           variantLabel: null,
           unitPrice: 20,
@@ -135,6 +91,7 @@ describe('InventoryService', () => {
       const res = await service.getProductSnapshots(['prod-1']);
       expect(res.length).toBe(1);
       expect(res[0].productName).toBe('Tee');
+      expect(res[0].sku).toBe('SKU-TEE-1');
     });
   });
 });
