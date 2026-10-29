@@ -29,6 +29,7 @@ interface ProductSnapshotRow {
   product_id: string;
   product_name: string;
   product_slug: string;
+  sku: string;
   image_url: string | null;
   variant_label: string | null;
   unit_price: string | number;
@@ -265,6 +266,7 @@ export class InventoryRepository {
           p.id AS product_id,
           p.name AS product_name,
           p.slug AS product_slug,
+          pv.sku AS sku,
           COALESCE(pv.image_url, pi.url) AS image_url,
           (
             SELECT string_agg(po.name || ': ' || pov.value, ' / ' ORDER BY po.position ASC)
@@ -299,6 +301,7 @@ export class InventoryRepository {
           p.id AS product_id,
           p.name AS product_name,
           p.slug AS product_slug,
+          p.sku AS sku,
           pi.url AS image_url,
           NULL::text AS variant_label,
           p.price AS unit_price,
@@ -344,6 +347,7 @@ export class InventoryRepository {
         variantId: row.variant_id,
         productName: row.product_name,
         productSlug: row.product_slug,
+        sku: row.sku,
         imageUrl: row.image_url,
         variantLabel: row.variant_label,
         unitPrice,

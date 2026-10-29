@@ -30,6 +30,7 @@ export interface CatalogProductSnapshot {
   variantId: string | null;
   productName: string;
   productSlug: string;
+  sku: string;
   imageUrl: string | null;
   variantLabel: string | null;
   unitPrice: number;
