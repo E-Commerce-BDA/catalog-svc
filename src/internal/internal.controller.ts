@@ -5,26 +5,37 @@ import {
   Get,
   Header,
   NotFoundException,
+  Param,
+  ParseUUIDPipe,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
 import { ServiceKeyGuard } from '../auth/guards/service-key.guard.js';
-import { ReleaseStockDto } from '../inventory/dto/release-stock.dto.js';
-import { ReserveStockDto } from '../inventory/dto/reserve-stock.dto.js';
 import { StockQueryDto } from '../inventory/dto/stock-query.dto.js';
 import { InventoryService } from '../inventory/inventory.service.js';
 import type {
   CatalogProductSnapshot,
   StockLevel,
+} from '../inventory/inventory.types.js';
+import { CommitStockDto } from '../stock/dto/commit-stock.dto.js';
+import { ReleaseStockDto } from '../stock/dto/release-stock.dto.js';
+import { ReserveStockDto } from '../stock/dto/reserve-stock.dto.js';
+import { StockReservationsService } from '../stock/stock-reservations.service.js';
+import type {
+  StockCommitResult,
   StockReleaseResult,
   StockReservationResult,
-} from '../inventory/inventory.types.js';
+  StockReservationView,
+} from '../stock/stock.types.js';
 
 @Controller(['catalog/internal', 'internal'])
 @UseGuards(ServiceKeyGuard)
 export class InternalController {
-  constructor(private readonly inventoryService: InventoryService) {}
+  constructor(
+    private readonly inventoryService: InventoryService,
+    private readonly stockReservations: StockReservationsService,
+  ) {}
 
   @Get('stock')
   @Header('Cache-Control', 'no-store')
@@ -48,7 +59,7 @@ export class InternalController {
   async reserveStock(
     @Body() dto: ReserveStockDto,
   ): Promise<StockReservationResult> {
-    return this.inventoryService.reserveStock(dto);
+    return this.stockReservations.reserve(dto);
   }
 
   @Post('stock/release')
@@ -56,7 +67,21 @@ export class InternalController {
   async releaseStock(
     @Body() dto: ReleaseStockDto,
   ): Promise<StockReleaseResult> {
-    return this.inventoryService.releaseStock(dto);
+    return this.stockReservations.release(dto);
+  }
+
+  @Post('stock/commit')
+  @Header('Cache-Control', 'no-store')
+  async commitStock(@Body() dto: CommitStockDto): Promise<StockCommitResult> {
+    return this.stockReservations.commit(dto);
+  }
+
+  @Get('stock/reservations/:id')
+  @Header('Cache-Control', 'no-store')
+  async getReservation(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<StockReservationView> {
+    return this.stockReservations.getReservation(id);
   }
 
   @Get('products')

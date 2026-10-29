@@ -1,25 +1,40 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InventoryService } from '../inventory/inventory.service.js';
+import { StockReservationsService } from '../stock/stock-reservations.service.js';
 import { InternalController } from './internal.controller.js';
 
 describe('InternalController', () => {
   let controller: InternalController;
   let service: {
     getStock: ReturnType<typeof vi.fn>;
-    reserveStock: ReturnType<typeof vi.fn>;
-    releaseStock: ReturnType<typeof vi.fn>;
     getProductSnapshots: ReturnType<typeof vi.fn>;
   };
+  let reservations: {
+    reserve: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
+    commit: ReturnType<typeof vi.fn>;
+    getReservation: ReturnType<typeof vi.fn>;
+  };
+
+  const reservationId = '0190a8b0-0000-7000-8000-0000000000aa';
+  const productId = '0190a8b0-0000-7000-8000-000000000001';
 
   beforeEach(() => {
     service = {
       getStock: vi.fn(),
-      reserveStock: vi.fn(),
-      releaseStock: vi.fn(),
       getProductSnapshots: vi.fn(),
     };
-    controller = new InternalController(service as unknown as InventoryService);
+    reservations = {
+      reserve: vi.fn(),
+      release: vi.fn(),
+      commit: vi.fn(),
+      getReservation: vi.fn(),
+    };
+    controller = new InternalController(
+      service as unknown as InventoryService,
+      reservations as unknown as StockReservationsService,
+    );
   });
 
   describe('getStock', () => {
@@ -27,51 +42,88 @@ describe('InternalController', () => {
       service.getStock.mockResolvedValueOnce(null);
 
       await expect(
-        controller.getStock({ productId: '0190a8b0-0000-7000-8000-000000000001' }),
+        controller.getStock({
+          productId: '0190a8b0-0000-7000-8000-000000000001',
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
     it('should return stock level if found', async () => {
       service.getStock.mockResolvedValueOnce({
-        productId: '0190a8b0-0000-7000-8000-000000000001',
+        productId,
         variantId: null,
         sku: 'SKU-A',
         stock: 5,
         available: true,
       });
 
-      const res = await controller.getStock({
-        productId: '0190a8b0-0000-7000-8000-000000000001',
-      });
+      const res = await controller.getStock({ productId });
       expect(res.stock).toBe(5);
       expect(res.available).toBe(true);
     });
   });
 
   describe('reserveStock', () => {
-    it('should delegate to inventoryService.reserveStock', async () => {
-      service.reserveStock.mockResolvedValueOnce({
-        reservationId: 'res-1',
+    it('should delegate to the stock reservation service', async () => {
+      reservations.reserve.mockResolvedValueOnce({
+        reservationId,
+        status: 'held',
+        expiresAt: new Date().toISOString(),
         items: [],
       });
 
       const res = await controller.reserveStock({
-        items: [{ productId: '0190a8b0-0000-7000-8000-000000000001', quantity: 2 }],
+        reservationId,
+        items: [{ productId, quantity: 2 }],
       });
-      expect(res.reservationId).toBe('res-1');
+      expect(reservations.reserve).toHaveBeenCalledWith({
+        reservationId,
+        items: [{ productId, quantity: 2 }],
+      });
+      expect(res.reservationId).toBe(reservationId);
     });
   });
 
   describe('releaseStock', () => {
-    it('should delegate to inventoryService.releaseStock', async () => {
-      service.releaseStock.mockResolvedValueOnce({
+    it('should delegate to the stock reservation service', async () => {
+      reservations.release.mockResolvedValueOnce({
+        reservationId,
+        status: 'released',
         items: [],
       });
 
-      const res = await controller.releaseStock({
-        items: [{ productId: '0190a8b0-0000-7000-8000-000000000001', quantity: 2 }],
-      });
+      const res = await controller.releaseStock({ reservationId });
+      expect(reservations.release).toHaveBeenCalledWith({ reservationId });
       expect(res.items).toEqual([]);
+    });
+  });
+
+  describe('commitStock', () => {
+    it('should delegate to the stock reservation service', async () => {
+      reservations.commit.mockResolvedValueOnce({
+        reservationId,
+        status: 'committed',
+        orderId: null,
+      });
+
+      const res = await controller.commitStock({ reservationId });
+      expect(res.status).toBe('committed');
+    });
+  });
+
+  describe('getReservation', () => {
+    it('should delegate to the stock reservation service', async () => {
+      reservations.getReservation.mockResolvedValueOnce({
+        reservationId,
+        status: 'held',
+        orderId: null,
+        expiresAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        items: [],
+      });
+
+      const res = await controller.getReservation(reservationId);
+      expect(res.status).toBe('held');
     });
   });
 
@@ -82,19 +134,19 @@ describe('InternalController', () => {
     });
 
     it('should throw BadRequestException if any id is not a valid UUID', async () => {
-      await expect(controller.getProducts('invalid-uuid,also-bad')).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        controller.getProducts('invalid-uuid,also-bad'),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should return snapshots for valid UUIDs', async () => {
-      const uuid = '0190a8b0-0000-7000-8000-000000000001';
       service.getProductSnapshots.mockResolvedValueOnce([
         {
-          productId: uuid,
+          productId: '0190a8b0-0000-7000-8000-000000000001',
           variantId: null,
           productName: 'Tee',
           productSlug: 'tee',
+          sku: 'SKU-TEE',
           imageUrl: null,
           variantLabel: null,
           unitPrice: 20,
@@ -104,9 +156,12 @@ describe('InternalController', () => {
         },
       ]);
 
-      const res = await controller.getProducts(uuid);
+      const res = await controller.getProducts(
+        '0190a8b0-0000-7000-8000-000000000001',
+      );
       expect(res.data.length).toBe(1);
       expect(res.data[0].productName).toBe('Tee');
+      expect(res.data[0].sku).toBe('SKU-TEE');
     });
   });
 });
