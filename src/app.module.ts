@@ -24,6 +24,7 @@ import Joi from 'joi';
         DATABASE_URL: Joi.string().uri().required(),
         JWT_SECRET: Joi.string().min(32).required(),
         KAFKA_BROKERS: Joi.string().default('localhost:9092'),
+        KAFKA_CONSUMER_ENABLED: Joi.boolean().default(true),
         STOCK_RESERVATION_TTL_SECONDS: Joi.number()
           .integer()
           .min(60)
