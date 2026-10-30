@@ -14,6 +14,7 @@ export interface ProductCardOptionItem {
   name: string;
   displayType: 'text' | 'pill' | 'swatch';
   showOnCard: boolean;
+  cardPlacement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden';
   values: ProductCardOptionValueItem[];
 }
 
@@ -47,6 +48,8 @@ export interface ProductRow {
   brand_slug?: string | null;
   badges?: ProductBadgeItem[];
   card_options?: ProductCardOptionItem[];
+  images?: Array<{ id: string; url: string; alt?: string | null; isPrimary: boolean; sortOrder: number }>;
+  card_variants?: Array<{ id: string; sku: string; price: number; compareAtPrice?: number | null; stock: number; imageUrl?: string | null; optionValues: Record<string, string> }>;
 }
 
 export interface ProductListItem {
@@ -66,6 +69,7 @@ export interface ProductListItem {
   brandName: string | null;
   brandSlug: string | null;
   primaryImageUrl: string | null;
+  images?: Array<{ id: string; url: string; alt?: string | null; isPrimary: boolean; sortOrder: number }>;
   tags: string[];
   effectivePrice: number;
   createdAt: string;
@@ -73,6 +77,7 @@ export interface ProductListItem {
   cardSettings?: Record<string, unknown>;
   badges?: ProductBadgeItem[];
   cardOptions?: ProductCardOptionItem[];
+  cardVariants?: Array<{ id: string; sku: string; price: number; compareAtPrice?: number | null; stock: number; imageUrl?: string | null; optionValues: Record<string, string> }>;
 }
 
 export interface ProductVariantOptionValue {
@@ -111,6 +116,7 @@ export interface ProductOption {
   position: number;
   displayType: 'text' | 'pill' | 'swatch';
   showOnCard: boolean;
+  cardPlacement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden';
   values: ProductOptionValue[];
 }
 

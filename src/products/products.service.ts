@@ -90,6 +90,7 @@ export class ProductsService {
         tags: dto.tags,
         attributes: dto.attributes,
         photoSettings: dto.photoSettings,
+        cardSettings: dto.cardSettings,
         source: dto.source,
         externalId: dto.externalId,
         weightG: dto.weightG,
@@ -158,6 +159,7 @@ export class ProductsService {
       tags: dto.tags,
       attributes: dto.attributes,
       photoSettings: dto.photoSettings,
+      cardSettings: dto.cardSettings,
       weightG: dto.weightG,
     });
 
@@ -248,6 +250,27 @@ export class ProductsService {
     }
   }
 
+  async publishProductUpdatedById(productId: string): Promise<void> {
+    const product = await this.repository.findById(productId);
+    if (!product) return;
+    await this.eventsService.publishProductUpdated({
+      productId: product.id,
+      sku: product.sku,
+      name: product.name,
+      slug: product.slug,
+      description: product.description ?? undefined,
+      categoryId: product.category?.id ?? undefined,
+      categorySlug: product.category?.slug ?? undefined,
+      brandId: product.brand?.id ?? undefined,
+      brandName: product.brand?.name ?? undefined,
+      price: product.price,
+      stock: product.stock,
+      imageUrl: product.images?.[0]?.url,
+      status: product.status === 'active' ? 'active' : 'inactive',
+      updatedAt: product.updatedAt,
+    });
+  }
+
   // --- Options ---
   async createOption(
     productId: string,
@@ -258,7 +281,9 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${productId}' not found`);
     }
 
-    return this.repository.createOption(productId, dto);
+    const created = await this.repository.createOption(productId, dto);
+    await this.publishProductUpdatedById(productId);
+    return created;
   }
 
   async updateOption(
@@ -275,6 +300,7 @@ export class ProductsService {
     if (!updated) {
       throw new NotFoundException(`Option with id '${optionId}' not found`);
     }
+    await this.publishProductUpdatedById(productId);
     return updated;
   }
 
@@ -288,7 +314,9 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${productId}' not found`);
     }
 
-    return this.repository.createImage(productId, dto);
+    const created = await this.repository.createImage(productId, dto);
+    await this.publishProductUpdatedById(productId);
+    return created;
   }
 
   async updateImage(id: string, dto: UpdateImageDto): Promise<ProductImage> {
@@ -296,14 +324,18 @@ export class ProductsService {
     if (!updated) {
       throw new NotFoundException(`Image with id '${id}' not found`);
     }
+    if (updated.productId) {
+      await this.publishProductUpdatedById(updated.productId);
+    }
     return updated;
   }
 
   async deleteImage(id: string): Promise<void> {
-    const deleted = await this.repository.deleteImage(id);
-    if (!deleted) {
+    const productId = await this.repository.deleteImage(id);
+    if (!productId) {
       throw new NotFoundException(`Image with id '${id}' not found`);
     }
+    await this.publishProductUpdatedById(productId);
   }
 
   // --- Discounts ---

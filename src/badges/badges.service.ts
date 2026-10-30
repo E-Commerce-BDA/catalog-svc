@@ -2,7 +2,10 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { EventsService } from '../events/events.service.js';
+import { ProductsRepository } from '../products/products.repository.js';
 import { BadgesRepository } from './badges.repository.js';
 import { Badge, ProductBadgeItem } from './badges.types.js';
 import { AssignProductBadgesDto } from './dto/assign-product-badges.dto.js';
@@ -11,7 +14,11 @@ import { UpdateBadgeDto } from './dto/update-badge.dto.js';
 
 @Injectable()
 export class BadgesService {
-  constructor(private readonly badgesRepository: BadgesRepository) {}
+  constructor(
+    private readonly badgesRepository: BadgesRepository,
+    @Optional() private readonly eventsService?: EventsService,
+    @Optional() private readonly productsRepository?: ProductsRepository,
+  ) {}
 
   async getBadges(options: { activeOnly?: boolean } = {}): Promise<Badge[]> {
     return this.badgesRepository.findAll(options);
@@ -69,6 +76,33 @@ export class BadgesService {
     productId: string,
     dto: AssignProductBadgesDto,
   ): Promise<ProductBadgeItem[]> {
-    return this.badgesRepository.assignProductBadges(productId, dto.badges);
+    const assigned = await this.badgesRepository.assignProductBadges(
+      productId,
+      dto.badges,
+    );
+
+    if (this.eventsService && this.productsRepository) {
+      const product = await this.productsRepository.findById(productId);
+      if (product) {
+        await this.eventsService.publishProductUpdated({
+          productId: product.id,
+          sku: product.sku,
+          name: product.name,
+          slug: product.slug,
+          description: product.description ?? undefined,
+          categoryId: product.category?.id ?? undefined,
+          categorySlug: product.category?.slug ?? undefined,
+          brandId: product.brand?.id ?? undefined,
+          brandName: product.brand?.name ?? undefined,
+          price: product.price,
+          stock: product.stock,
+          imageUrl: product.images?.[0]?.url,
+          status: product.status === 'active' ? 'active' : 'inactive',
+          updatedAt: product.updatedAt,
+        });
+      }
+    }
+
+    return assigned;
   }
 }

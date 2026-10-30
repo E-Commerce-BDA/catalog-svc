@@ -37,6 +37,10 @@ export class CreateOptionDto {
   showOnCard?: boolean;
 
   @IsOptional()
+  @IsIn(['info', 'media', 'brand-hover', 'media-hover-top', 'hidden'])
+  cardPlacement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden';
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   position?: number;
@@ -56,6 +60,10 @@ export class UpdateOptionDto {
   @IsOptional()
   @IsBoolean()
   showOnCard?: boolean;
+
+  @IsOptional()
+  @IsIn(['info', 'media', 'brand-hover', 'media-hover-top', 'hidden'])
+  cardPlacement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden';
 
   @IsOptional()
   @IsInt()

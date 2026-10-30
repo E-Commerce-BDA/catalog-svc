@@ -175,11 +175,16 @@ CREATE TABLE IF NOT EXISTS catalog.product_options (
   name varchar(100) NOT NULL,
   display_type varchar(20) DEFAULT 'text' NOT NULL,
   show_on_card boolean DEFAULT false NOT NULL,
+  card_placement varchar(20),
   position integer DEFAULT 0 NOT NULL,
   created_at timestamptz DEFAULT now() NOT NULL,
   updated_at timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT product_options_pkey PRIMARY KEY (id),
-  CONSTRAINT product_options_product_id_fkey FOREIGN KEY (product_id) REFERENCES catalog.products(id) ON DELETE CASCADE
+  CONSTRAINT product_options_product_id_fkey FOREIGN KEY (product_id) REFERENCES catalog.products(id) ON DELETE CASCADE,
+  CONSTRAINT product_options_card_placement_check CHECK (
+    card_placement IS NULL
+    OR card_placement IN ('info', 'media', 'brand-hover', 'media-hover-top', 'hidden')
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_product_options_product_id

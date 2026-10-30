@@ -159,7 +159,9 @@ export class ProductsRepository {
              pi.url AS primary_image_url,
              d.discount_type, d.value AS discount_value,
              coalesce(bdg.badges, '[]'::jsonb) AS badges,
-             coalesce(opt.card_options, '[]'::jsonb) AS card_options
+             coalesce(opt.card_options, '[]'::jsonb) AS card_options,
+             coalesce(imgs.images, '[]'::jsonb) AS images,
+             coalesce(vars.variants, '[]'::jsonb) AS card_variants
       FROM catalog.products p
       LEFT JOIN catalog.categories c ON c.id = p.category_id
       LEFT JOIN catalog.brands b ON b.id = p.brand_id
@@ -201,6 +203,7 @@ export class ProductsRepository {
             'name', po.name,
             'displayType', po.display_type,
             'showOnCard', po.show_on_card,
+            'cardPlacement', coalesce(po.card_placement, CASE WHEN po.show_on_card THEN 'info' ELSE 'hidden' END),
             'values', coalesce(pov_agg.vals, '[]'::jsonb)
           ) ORDER BY po.position ASC, po.created_at ASC
         ) AS card_options
@@ -218,8 +221,56 @@ export class ProductsRepository {
           FROM catalog.product_option_values pov
           WHERE pov.option_id = po.id
         ) pov_agg ON true
-        WHERE po.product_id = p.id AND po.show_on_card = true
+        WHERE po.product_id = p.id
+          AND (
+            (po.card_placement IS NOT NULL AND po.card_placement <> 'hidden')
+            OR (po.card_placement IS NULL AND po.show_on_card = true)
+          )
       ) opt ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'id', pi_sub.id,
+            'url', pi_sub.url,
+            'alt', pi_sub.alt,
+            'isPrimary', pi_sub.is_primary,
+            'sortOrder', pi_sub.sort_order
+          ) ORDER BY pi_sub.is_primary DESC, pi_sub.sort_order ASC, pi_sub.created_at ASC
+        ) AS images
+        FROM (
+          SELECT id, url, alt, is_primary, sort_order, created_at
+          FROM catalog.product_images
+          WHERE product_id = p.id
+          ORDER BY is_primary DESC, sort_order ASC, created_at ASC
+          LIMIT 5
+        ) pi_sub
+      ) imgs ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'id', pv.id,
+            'sku', pv.sku,
+            'price', pv.price::numeric,
+            'stock', pv.stock,
+            'imageUrl', pv.image_url,
+            'optionValues', coalesce(v_opts.opt_map, '{}'::jsonb)
+          ) ORDER BY pv.created_at ASC
+        ) AS variants
+        FROM (
+          SELECT pv_sub.id, pv_sub.sku, pv_sub.price, pv_sub.stock, pv_sub.image_url, pv_sub.created_at
+          FROM catalog.product_variants pv_sub
+          WHERE pv_sub.product_id = p.id AND pv_sub.is_active = true
+          ORDER BY pv_sub.created_at ASC
+          LIMIT 100
+        ) pv
+        LEFT JOIN LATERAL (
+          SELECT jsonb_object_agg(po.name, pov.value) AS opt_map
+          FROM catalog.product_variant_option_values pvov
+          JOIN catalog.product_options po ON po.id = pvov.option_id
+          JOIN catalog.product_option_values pov ON pov.id = pvov.option_value_id
+          WHERE pvov.variant_id = pv.id
+        ) v_opts ON true
+      ) vars ON true
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${orderBy}
       LIMIT ${limit + 1};
@@ -269,6 +320,12 @@ export class ProductsRepository {
         cardSettings: row.card_settings ?? {},
         badges: row.badges ?? [],
         cardOptions: row.card_options ?? [],
+        images: Array.isArray(row.images) && row.images.length > 0
+          ? row.images
+          : row.primary_image_url
+            ? [{ id: 'pri', url: row.primary_image_url, alt: null, isPrimary: true, sortOrder: 0 }]
+            : [],
+        cardVariants: Array.isArray(row.card_variants) ? row.card_variants : [],
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),
       };
@@ -840,22 +897,30 @@ export class ProductsRepository {
 
     try {
       await client.query('BEGIN');
+      const showOnCard =
+        dto.cardPlacement !== undefined
+          ? dto.cardPlacement !== 'hidden'
+          : (dto.showOnCard ?? false);
+      const cardPlacement = dto.cardPlacement ?? null;
+
       const { rows: optRows } = await client.query<{
         id: string;
         product_id: string;
         name: string;
         display_type: 'text' | 'pill' | 'swatch';
         show_on_card: boolean;
+        card_placement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden' | null;
         position: number;
       }>(
-        `INSERT INTO catalog.product_options (product_id, name, display_type, show_on_card, position)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, product_id, name, display_type, show_on_card, position;`,
+        `INSERT INTO catalog.product_options (product_id, name, display_type, show_on_card, card_placement, position)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, product_id, name, display_type, show_on_card, card_placement, position;`,
         [
           productId,
           dto.name,
           dto.displayType ?? 'text',
-          dto.showOnCard ?? false,
+          showOnCard,
+          cardPlacement,
           dto.position ?? 0,
         ],
       );
@@ -907,6 +972,7 @@ export class ProductsRepository {
         name: opt.name,
         displayType: opt.display_type,
         showOnCard: opt.show_on_card,
+        cardPlacement: opt.card_placement ?? undefined,
         position: opt.position,
         values,
       };
@@ -939,6 +1005,14 @@ export class ProductsRepository {
       fields.push(`show_on_card = $${idx++}`);
       values.push(dto.showOnCard);
     }
+    if (dto.cardPlacement !== undefined) {
+      fields.push(`card_placement = $${idx++}`);
+      values.push(dto.cardPlacement);
+      if (dto.showOnCard === undefined) {
+        fields.push(`show_on_card = $${idx++}`);
+        values.push(dto.cardPlacement !== 'hidden');
+      }
+    }
     if (dto.position !== undefined) {
       fields.push(`position = $${idx++}`);
       values.push(dto.position);
@@ -957,9 +1031,10 @@ export class ProductsRepository {
       name: string;
       display_type: 'text' | 'pill' | 'swatch';
       show_on_card: boolean;
+      card_placement?: 'info' | 'media' | 'brand-hover' | 'media-hover-top' | 'hidden' | null;
       position: number;
     }>(
-      `SELECT id, product_id, name, display_type, show_on_card, position
+      `SELECT id, product_id, name, display_type, show_on_card, card_placement, position
        FROM catalog.product_options WHERE id = $1;`,
       [optionId],
     );
@@ -987,6 +1062,7 @@ export class ProductsRepository {
       name: opt.name,
       displayType: opt.display_type,
       showOnCard: opt.show_on_card,
+      cardPlacement: opt.card_placement ?? undefined,
       position: opt.position,
       values: valRows.map((v) => ({
         id: v.id,
@@ -1103,13 +1179,13 @@ export class ProductsRepository {
     };
   }
 
-  async deleteImage(id: string): Promise<boolean> {
+  async deleteImage(id: string): Promise<string | null> {
     const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
-      `DELETE FROM catalog.product_images WHERE id = $1 RETURNING id;`,
+    const { rows } = await pool.query<{ id: string; product_id: string }>(
+      `DELETE FROM catalog.product_images WHERE id = $1 RETURNING id, product_id;`,
       [id],
     );
-    return rows.length > 0;
+    return rows.length > 0 ? rows[0].product_id : null;
   }
 
   // --- Discounts ---

@@ -419,4 +419,39 @@ describe('Catalog Schema (e2e)', () => {
     );
     expect(valCols).toHaveLength(2);
   });
+
+  it('20. exposes product_options.card_placement with check constraint', async () => {
+    const { rows: colRows } = await client.query<{ column_name: string; data_type: string }>(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog'
+         AND table_name = 'product_options'
+         AND column_name = 'card_placement';`,
+    );
+    expect(colRows).toHaveLength(1);
+    expect(colRows[0].data_type).toBe('character varying');
+
+    const { rows: prodRows } = await client.query<{ id: string }>(
+      `SELECT id FROM catalog.products LIMIT 1;`,
+    );
+    const productId = prodRows[0].id;
+
+    // Verify valid placement succeeds
+    const { rows: inserted } = await client.query<{ id: string }>(
+      `INSERT INTO catalog.product_options (product_id, name, display_type, card_placement, position)
+       VALUES ($1, 'Placement Test', 'pill', 'brand-hover', 99)
+       RETURNING id;`,
+      [productId],
+    );
+    expect(inserted).toHaveLength(1);
+
+    // Verify invalid placement throws check constraint violation
+    await expect(
+      client.query(
+        `INSERT INTO catalog.product_options (product_id, name, display_type, card_placement, position)
+         VALUES ($1, 'Invalid Placement', 'pill', 'invalid-slot', 100);`,
+        [productId],
+      ),
+    ).rejects.toThrow(/product_options_card_placement_check/);
+  });
 });
