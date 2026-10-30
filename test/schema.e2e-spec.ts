@@ -30,7 +30,7 @@ describe('Catalog Schema (e2e)', () => {
     await closePool();
   });
 
-  it('1. all 14 base tables exist in catalog schema', async () => {
+  it('1. all 17 base tables exist in catalog schema', async () => {
     const { rows } = await client.query<{ table_name: string }>(
       `SELECT table_name 
        FROM information_schema.tables 
@@ -43,6 +43,7 @@ describe('Catalog Schema (e2e)', () => {
       'badges',
       'brands',
       'categories',
+      'processed_events',
       'product_attribute_values',
       'product_attributes',
       'product_badges',
@@ -95,6 +96,7 @@ describe('Catalog Schema (e2e)', () => {
       'idx_stock_movements_reservation',
       'idx_stock_reservations_order',
       'idx_stock_reservations_due',
+      'idx_catalog_processed_events_processed_at',
       'idx_product_discounts_active',
       'idx_discounts_active_range',
       'idx_reviews_product_approved',
@@ -453,5 +455,55 @@ describe('Catalog Schema (e2e)', () => {
         [productId],
       ),
     ).rejects.toThrow(/product_options_card_placement_check/);
+  });
+
+  it('21. keeps processed_events idempotent on event_id', async () => {
+    const { rows: columns } = await client.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog' AND table_name = 'processed_events'
+       ORDER BY ordinal_position;`,
+    );
+
+    expect(columns).toEqual([
+      {
+        column_name: 'event_id',
+        data_type: 'character varying',
+        is_nullable: 'NO',
+      },
+      { column_name: 'topic', data_type: 'character varying', is_nullable: 'NO' },
+      {
+        column_name: 'processed_at',
+        data_type: 'timestamp with time zone',
+        is_nullable: 'NO',
+      },
+    ]);
+
+    const eventId = `evt-${randomUUID()}`;
+    const insert = `INSERT INTO catalog.processed_events (event_id, topic)
+                    VALUES ($1, 'order.created')
+                    ON CONFLICT (event_id) DO NOTHING
+                    RETURNING event_id`;
+
+    const first = await client.query(insert, [eventId]);
+    expect(first.rowCount).toBe(1);
+
+    // The claim is the consumer's idempotency gate: a replay claims nothing.
+    const replay = await client.query(insert, [eventId]);
+    expect(replay.rowCount).toBe(0);
+
+    // The event id is the identity — two topics cannot both own one id.
+    await client.query('SAVEPOINT processed_sp');
+    await expect(
+      client.query(
+        `INSERT INTO catalog.processed_events (event_id, topic) VALUES ($1, 'order.status.updated')`,
+        [eventId],
+      ),
+    ).rejects.toThrow(/processed_events_pkey/);
+    await client.query('ROLLBACK TO SAVEPOINT processed_sp');
   });
 });
