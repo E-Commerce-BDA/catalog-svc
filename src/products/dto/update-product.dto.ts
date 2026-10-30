@@ -81,6 +81,10 @@ export class UpdateProductDto {
   photoSettings?: Record<string, unknown>;
 
   @IsOptional()
+  @IsObject()
+  cardSettings?: Record<string, unknown>;
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   weightG?: number | null;

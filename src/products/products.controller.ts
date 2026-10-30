@@ -17,7 +17,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
-import { CreateOptionDto } from './dto/create-option.dto.js';
+import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { CreateVariantDto } from './dto/create-variant.dto.js';
 import { ProductQueryDto } from './dto/product-query.dto.js';
@@ -114,6 +114,18 @@ export class ProductsController {
     @Body() dto: CreateOptionDto,
   ): Promise<{ option: ProductOption }> {
     const option = await this.productsService.createOption(id, dto);
+    return { option };
+  }
+
+  @Patch(':id/options/:optionId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  async updateOption(
+    @Param('id') id: string,
+    @Param('optionId') optionId: string,
+    @Body() dto: UpdateOptionDto,
+  ): Promise<{ option: ProductOption }> {
+    const option = await this.productsService.updateOption(id, optionId, dto);
     return { option };
   }
 

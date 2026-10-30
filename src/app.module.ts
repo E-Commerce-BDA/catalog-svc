@@ -12,6 +12,7 @@ import { InventoryModule } from './inventory/inventory.module.js';
 import { InternalModule } from './internal/internal.module.js';
 import { EventsModule } from './events/events.module.js';
 import { StockModule } from './stock/stock.module.js';
+import { BadgesModule } from './badges/badges.module.js';
 import Joi from 'joi';
 
 @Module({
@@ -41,6 +42,7 @@ import Joi from 'joi';
     InventoryModule,
     InternalModule,
     StockModule,
+    BadgesModule,
   ],
 })
 export class AppModule {}

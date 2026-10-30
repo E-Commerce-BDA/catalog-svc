@@ -78,6 +78,10 @@ export class CreateProductDto {
   photoSettings?: Record<string, unknown>;
 
   @IsOptional()
+  @IsObject()
+  cardSettings?: Record<string, unknown>;
+
+  @IsOptional()
   @IsIn(['local', 'shopify', 'bigcommerce', 'odoo'])
   source?: string;
 

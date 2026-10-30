@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { getPool } from '../db/pool.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
-import { CreateOptionDto } from './dto/create-option.dto.js';
+import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { CreateVariantDto } from './dto/create-variant.dto.js';
 import { ProductQueryDto } from './dto/product-query.dto.js';
@@ -34,6 +34,8 @@ interface RawPdpRow {
   tags: string[] | null;
   attributes: Record<string, unknown>;
   photo_settings: Record<string, unknown>;
+  card_settings?: Record<string, unknown>;
+  badges?: ProductBadgeItem[];
   created_at: Date | string;
   updated_at: Date | string;
   category: { id: string; name: string; slug: string } | null;
@@ -52,12 +54,16 @@ interface RawPdpRow {
     id: string;
     productId: string;
     name: string;
+    displayType: 'text' | 'pill' | 'swatch';
+    showOnCard: boolean;
     position: number;
     values: Array<{
       id: string;
       optionId: string;
       value: string;
       position: number;
+      swatchHex?: string | null;
+      swatchImageUrl?: string | null;
     }>;
   }>;
   variants: Array<{
@@ -147,11 +153,13 @@ export class ProductsRepository {
 
     const sql = `
       SELECT p.id, p.sku, p.name, p.slug, p.short_description, p.price,
-             p.compare_at_price, p.stock, p.status, p.tags, p.created_at, p.updated_at,
+             p.compare_at_price, p.stock, p.status, p.tags, p.card_settings, p.created_at, p.updated_at,
              p.category_id, c.name AS category_name, c.slug AS category_slug,
              p.brand_id, b.name AS brand_name, b.slug AS brand_slug,
              pi.url AS primary_image_url,
-             d.discount_type, d.value AS discount_value
+             d.discount_type, d.value AS discount_value,
+             coalesce(bdg.badges, '[]'::jsonb) AS badges,
+             coalesce(opt.card_options, '[]'::jsonb) AS card_options
       FROM catalog.products p
       LEFT JOIN catalog.categories c ON c.id = p.category_id
       LEFT JOIN catalog.brands b ON b.id = p.brand_id
@@ -166,6 +174,52 @@ export class ProductsRepository {
         ORDER BY pd.created_at DESC
         LIMIT 1
       ) d ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'id', b.id,
+            'key', b.key,
+            'label', b.label,
+            'bg', b.bg,
+            'textColor', b.text_color,
+            'borderColor', b.border_color,
+            'borderStyle', b.border_style,
+            'sortOrder', pb.sort_order
+          ) ORDER BY pb.sort_order ASC, pb.created_at ASC
+        ) AS badges
+        FROM catalog.product_badges pb
+        JOIN catalog.badges b ON b.id = pb.badge_id
+        WHERE pb.product_id = p.id
+          AND b.is_active = true
+          AND (pb.starts_at IS NULL OR pb.starts_at <= now())
+          AND (pb.ends_at IS NULL OR pb.ends_at >= now())
+      ) bdg ON true
+      LEFT JOIN LATERAL (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'id', po.id,
+            'name', po.name,
+            'displayType', po.display_type,
+            'showOnCard', po.show_on_card,
+            'values', coalesce(pov_agg.vals, '[]'::jsonb)
+          ) ORDER BY po.position ASC, po.created_at ASC
+        ) AS card_options
+        FROM catalog.product_options po
+        LEFT JOIN LATERAL (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'id', pov.id,
+              'value', pov.value,
+              'position', pov.position,
+              'swatchHex', pov.swatch_hex,
+              'swatchImageUrl', pov.swatch_image_url
+            ) ORDER BY pov.position ASC, pov.created_at ASC
+          ) AS vals
+          FROM catalog.product_option_values pov
+          WHERE pov.option_id = po.id
+        ) pov_agg ON true
+        WHERE po.product_id = p.id AND po.show_on_card = true
+      ) opt ON true
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${orderBy}
       LIMIT ${limit + 1};
@@ -212,6 +266,9 @@ export class ProductsRepository {
         brandSlug: row.brand_slug ?? null,
         primaryImageUrl: row.primary_image_url ?? null,
         tags: Array.isArray(row.tags) ? row.tags : [],
+        cardSettings: row.card_settings ?? {},
+        badges: row.badges ?? [],
+        cardOptions: row.card_options ?? [],
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),
       };
@@ -241,13 +298,33 @@ export class ProductsRepository {
       SELECT
         prod.id, prod.sku, prod.name, prod.slug, prod.short_description, prod.description,
         prod.price, prod.compare_at_price, prod.stock, prod.status, prod.tags,
-        prod.attributes, prod.photo_settings, prod.created_at, prod.updated_at,
+        prod.attributes, prod.photo_settings, prod.card_settings, prod.created_at, prod.updated_at,
         CASE WHEN prod.category_id IS NOT NULL THEN
           jsonb_build_object('id', prod.category_id, 'name', prod.cat_name, 'slug', prod.cat_slug)
         ELSE NULL END AS category,
         CASE WHEN prod.brand_id IS NOT NULL THEN
           jsonb_build_object('id', prod.brand_id, 'name', prod.br_name, 'slug', prod.br_slug, 'logoUrl', prod.br_logo)
         ELSE NULL END AS brand,
+        COALESCE((
+          SELECT json_agg(
+            json_build_object(
+              'id', b.id,
+              'key', b.key,
+              'label', b.label,
+              'bg', b.bg,
+              'textColor', b.text_color,
+              'borderColor', b.border_color,
+              'borderStyle', b.border_style,
+              'sortOrder', pb.sort_order
+            ) ORDER BY pb.sort_order ASC, pb.created_at ASC
+          )
+          FROM catalog.product_badges pb
+          JOIN catalog.badges b ON b.id = pb.badge_id
+          WHERE pb.product_id = prod.id
+            AND b.is_active = true
+            AND (pb.starts_at IS NULL OR pb.starts_at <= now())
+            AND (pb.ends_at IS NULL OR pb.ends_at >= now())
+        ), '[]'::json) AS badges,
         COALESCE((
           SELECT json_agg(
             json_build_object(
@@ -270,6 +347,8 @@ export class ProductsRepository {
               'id', po.id,
               'productId', po.product_id,
               'name', po.name,
+              'displayType', po.display_type,
+              'showOnCard', po.show_on_card,
               'position', po.position,
               'values', COALESCE((
                 SELECT json_agg(
@@ -277,7 +356,9 @@ export class ProductsRepository {
                     'id', pov.id,
                     'optionId', pov.option_id,
                     'value', pov.value,
-                    'position', pov.position
+                    'position', pov.position,
+                    'swatchHex', pov.swatch_hex,
+                    'swatchImageUrl', pov.swatch_image_url
                   ) ORDER BY pov.position ASC, pov.id ASC
                 )
                 FROM catalog.product_option_values pov
@@ -387,6 +468,11 @@ export class ProductsRepository {
         raw.photo_settings && typeof raw.photo_settings === 'object'
           ? raw.photo_settings
           : {},
+      cardSettings:
+        raw.card_settings && typeof raw.card_settings === 'object'
+          ? raw.card_settings
+          : {},
+      badges: Array.isArray(raw.badges) ? raw.badges : [],
       images: Array.isArray(raw.images) ? raw.images : [],
       options: Array.isArray(raw.options) ? raw.options : [],
       variants: Array.isArray(raw.variants)
@@ -435,9 +521,9 @@ export class ProductsRepository {
       `INSERT INTO catalog.products (
          sku, name, slug, short_description, description, category_id, brand_id,
          price, compare_at_price, stock, status, tags, attributes, photo_settings,
-         source, external_id, weight_g
+         card_settings, source, external_id, weight_g
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
        )
        RETURNING id;`,
       [
@@ -455,6 +541,7 @@ export class ProductsRepository {
         dto.tags ?? [],
         JSON.stringify(dto.attributes ?? {}),
         JSON.stringify(dto.photoSettings ?? {}),
+        JSON.stringify(dto.cardSettings ?? {}),
         dto.source ?? 'local',
         dto.externalId ?? null,
         dto.weightG ?? null,
@@ -525,6 +612,10 @@ export class ProductsRepository {
     if (dto.photoSettings !== undefined) {
       fields.push(`photo_settings = $${idx++}`);
       values.push(JSON.stringify(dto.photoSettings));
+    }
+    if (dto.cardSettings !== undefined) {
+      fields.push(`card_settings = $${idx++}`);
+      values.push(JSON.stringify(dto.cardSettings));
     }
     if (dto.weightG !== undefined) {
       fields.push(`weight_g = $${idx++}`);
@@ -753,12 +844,20 @@ export class ProductsRepository {
         id: string;
         product_id: string;
         name: string;
+        display_type: 'text' | 'pill' | 'swatch';
+        show_on_card: boolean;
         position: number;
       }>(
-        `INSERT INTO catalog.product_options (product_id, name, position)
-         VALUES ($1, $2, $3)
-         RETURNING id, product_id, name, position;`,
-        [productId, dto.name, dto.position ?? 0],
+        `INSERT INTO catalog.product_options (product_id, name, display_type, show_on_card, position)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, product_id, name, display_type, show_on_card, position;`,
+        [
+          productId,
+          dto.name,
+          dto.displayType ?? 'text',
+          dto.showOnCard ?? false,
+          dto.position ?? 0,
+        ],
       );
 
       const opt = optRows[0];
@@ -767,26 +866,37 @@ export class ProductsRepository {
         optionId: string;
         value: string;
         position: number;
+        swatchHex?: string | null;
+        swatchImageUrl?: string | null;
       }> = [];
 
       for (let i = 0; i < dto.values.length; i++) {
-        const valText = dto.values[i];
+        const item = dto.values[i];
+        const valText = typeof item === 'string' ? item : item.value;
+        const swatchHex = typeof item === 'string' ? null : (item.swatchHex ?? null);
+        const swatchImageUrl =
+          typeof item === 'string' ? null : (item.swatchImageUrl ?? null);
+
         const { rows: valRows } = await client.query<{
           id: string;
           option_id: string;
           value: string;
           position: number;
+          swatch_hex: string | null;
+          swatch_image_url: string | null;
         }>(
-          `INSERT INTO catalog.product_option_values (option_id, value, position)
-           VALUES ($1, $2, $3)
-           RETURNING id, option_id, value, position;`,
-          [opt.id, valText, i],
+          `INSERT INTO catalog.product_option_values (option_id, value, position, swatch_hex, swatch_image_url)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, option_id, value, position, swatch_hex, swatch_image_url;`,
+          [opt.id, valText, i, swatchHex, swatchImageUrl],
         );
         values.push({
           id: valRows[0].id,
           optionId: valRows[0].option_id,
           value: valRows[0].value,
           position: valRows[0].position,
+          swatchHex: valRows[0].swatch_hex,
+          swatchImageUrl: valRows[0].swatch_image_url,
         });
       }
 
@@ -795,6 +905,8 @@ export class ProductsRepository {
         id: opt.id,
         productId: opt.product_id,
         name: opt.name,
+        displayType: opt.display_type,
+        showOnCard: opt.show_on_card,
         position: opt.position,
         values,
       };
@@ -804,6 +916,87 @@ export class ProductsRepository {
     } finally {
       client.release();
     }
+  }
+
+  async updateOption(
+    optionId: string,
+    dto: UpdateOptionDto,
+  ): Promise<ProductOption | null> {
+    const pool = getPool();
+    const fields: string[] = [];
+    const values: unknown[] = [optionId];
+    let idx = 2;
+
+    if (dto.name !== undefined) {
+      fields.push(`name = $${idx++}`);
+      values.push(dto.name);
+    }
+    if (dto.displayType !== undefined) {
+      fields.push(`display_type = $${idx++}`);
+      values.push(dto.displayType);
+    }
+    if (dto.showOnCard !== undefined) {
+      fields.push(`show_on_card = $${idx++}`);
+      values.push(dto.showOnCard);
+    }
+    if (dto.position !== undefined) {
+      fields.push(`position = $${idx++}`);
+      values.push(dto.position);
+    }
+
+    if (fields.length > 0) {
+      await pool.query(
+        `UPDATE catalog.product_options SET ${fields.join(', ')} WHERE id = $1;`,
+        values,
+      );
+    }
+
+    const { rows: optRows } = await pool.query<{
+      id: string;
+      product_id: string;
+      name: string;
+      display_type: 'text' | 'pill' | 'swatch';
+      show_on_card: boolean;
+      position: number;
+    }>(
+      `SELECT id, product_id, name, display_type, show_on_card, position
+       FROM catalog.product_options WHERE id = $1;`,
+      [optionId],
+    );
+    if (optRows.length === 0) return null;
+
+    const opt = optRows[0];
+    const { rows: valRows } = await pool.query<{
+      id: string;
+      option_id: string;
+      value: string;
+      position: number;
+      swatch_hex: string | null;
+      swatch_image_url: string | null;
+    }>(
+      `SELECT id, option_id, value, position, swatch_hex, swatch_image_url
+       FROM catalog.product_option_values
+       WHERE option_id = $1
+       ORDER BY position ASC;`,
+      [optionId],
+    );
+
+    return {
+      id: opt.id,
+      productId: opt.product_id,
+      name: opt.name,
+      displayType: opt.display_type,
+      showOnCard: opt.show_on_card,
+      position: opt.position,
+      values: valRows.map((v) => ({
+        id: v.id,
+        optionId: v.option_id,
+        value: v.value,
+        position: v.position,
+        swatchHex: v.swatch_hex,
+        swatchImageUrl: v.swatch_image_url,
+      })),
+    };
   }
 
   // --- Images ---

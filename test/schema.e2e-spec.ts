@@ -40,10 +40,12 @@ describe('Catalog Schema (e2e)', () => {
 
     const tableNames = rows.map((r) => r.table_name);
     expect(tableNames).toEqual([
+      'badges',
       'brands',
       'categories',
       'product_attribute_values',
       'product_attributes',
+      'product_badges',
       'product_discounts',
       'product_images',
       'product_option_values',
@@ -97,6 +99,8 @@ describe('Catalog Schema (e2e)', () => {
       'idx_discounts_active_range',
       'idx_reviews_product_approved',
       'idx_reviews_user_id',
+      'idx_badges_active',
+      'idx_product_badges_lookup',
     ];
 
     for (const expected of expectedIndexes) {
@@ -336,5 +340,83 @@ describe('Catalog Schema (e2e)', () => {
     );
 
     expect(rows).toHaveLength(1);
+  });
+
+  it('17. enforces unique key on badges and valid foreign key on product_badges', async () => {
+    const badgeKey = `badge-${randomUUID().slice(0, 8)}`;
+    const { rows: badgeRows } = await client.query<{ id: string }>(
+      `INSERT INTO catalog.badges (key, label, bg, text_color)
+       VALUES ($1, 'Test Badge', '#ff0000', '#ffffff')
+       RETURNING id;`,
+      [badgeKey],
+    );
+    const badgeId = badgeRows[0].id;
+
+    // Unique key check
+    await client.query('SAVEPOINT badge_key_sp');
+    await expect(
+      client.query(
+        `INSERT INTO catalog.badges (key, label, bg, text_color)
+         VALUES ($1, 'Dup Badge', '#ff0000', '#ffffff');`,
+        [badgeKey],
+      ),
+    ).rejects.toThrow();
+    await client.query('ROLLBACK TO SAVEPOINT badge_key_sp');
+
+    // Create a product and assign badge
+    const pSlug = `prod-${randomUUID()}`;
+    const pSku = `SKU-${randomUUID().slice(0, 8)}`;
+    const { rows: pRows } = await client.query<{ id: string }>(
+      `INSERT INTO catalog.products (sku, name, slug, price, status)
+       VALUES ($1, 'Test Product', $2, 99.99, 'active')
+       RETURNING id;`,
+      [pSku, pSlug],
+    );
+    const productId = pRows[0].id;
+
+    await client.query(
+      `INSERT INTO catalog.product_badges (product_id, badge_id, sort_order)
+       VALUES ($1, $2, 1);`,
+      [productId, badgeId],
+    );
+
+    const { rows: assigned } = await client.query(
+      `SELECT * FROM catalog.product_badges WHERE product_id = $1 AND badge_id = $2;`,
+      [productId, badgeId],
+    );
+    expect(assigned).toHaveLength(1);
+  });
+
+  it('18. exposes products.card_settings jsonb column', async () => {
+    const { rows } = await client.query<{ column_name: string; data_type: string }>(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog'
+         AND table_name = 'products'
+         AND column_name = 'card_settings';`,
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type).toBe('jsonb');
+  });
+
+  it('19. exposes product_options and product_option_values swatch columns', async () => {
+    const { rows: optCols } = await client.query<{ column_name: string }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog'
+         AND table_name = 'product_options'
+         AND column_name IN ('display_type', 'show_on_card');`,
+    );
+    expect(optCols).toHaveLength(2);
+
+    const { rows: valCols } = await client.query<{ column_name: string }>(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog'
+         AND table_name = 'product_option_values'
+         AND column_name IN ('swatch_hex', 'swatch_image_url');`,
+    );
+    expect(valCols).toHaveLength(2);
   });
 });

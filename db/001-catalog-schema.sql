@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS catalog.products (
   tags varchar(50)[],
   attributes jsonb DEFAULT '{}'::jsonb NOT NULL,
   photo_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+  card_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
   source varchar(20) DEFAULT 'local' NOT NULL,
   external_id varchar(255),
   weight_g integer,
@@ -172,6 +173,8 @@ CREATE TABLE IF NOT EXISTS catalog.product_options (
   id uuid DEFAULT gen_random_uuid(),
   product_id uuid NOT NULL,
   name varchar(100) NOT NULL,
+  display_type varchar(20) DEFAULT 'text' NOT NULL,
+  show_on_card boolean DEFAULT false NOT NULL,
   position integer DEFAULT 0 NOT NULL,
   created_at timestamptz DEFAULT now() NOT NULL,
   updated_at timestamptz DEFAULT now() NOT NULL,
@@ -187,6 +190,8 @@ CREATE TABLE IF NOT EXISTS catalog.product_option_values (
   id uuid DEFAULT gen_random_uuid(),
   option_id uuid NOT NULL,
   value varchar(150) NOT NULL,
+  swatch_hex varchar(9),
+  swatch_image_url varchar(2048),
   position integer DEFAULT 0 NOT NULL,
   created_at timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT product_option_values_pkey PRIMARY KEY (id),
@@ -306,7 +311,43 @@ CREATE INDEX IF NOT EXISTS idx_reviews_product_approved
 CREATE INDEX IF NOT EXISTS idx_reviews_user_id
   ON catalog.reviews (user_id);
 
--- 13. triggers for updated_at
+-- 13. badges & product_badges
+CREATE TABLE IF NOT EXISTS catalog.badges (
+  id uuid DEFAULT gen_random_uuid(),
+  key varchar(64) NOT NULL,
+  label varchar(64) NOT NULL,
+  bg varchar(9) NOT NULL,
+  text_color varchar(9) NOT NULL,
+  border_color varchar(9),
+  border_style varchar(10) DEFAULT 'solid',
+  is_active boolean DEFAULT true NOT NULL,
+  created_at timestamptz DEFAULT now() NOT NULL,
+  updated_at timestamptz DEFAULT now() NOT NULL,
+  CONSTRAINT badges_pkey PRIMARY KEY (id),
+  CONSTRAINT badges_key_unique UNIQUE (key),
+  CONSTRAINT badges_border_style_check CHECK (border_style IN ('solid', 'dashed', 'dotted'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_badges_active
+  ON catalog.badges (is_active)
+  WHERE is_active = true;
+
+CREATE TABLE IF NOT EXISTS catalog.product_badges (
+  product_id uuid NOT NULL,
+  badge_id uuid NOT NULL,
+  sort_order integer DEFAULT 0 NOT NULL,
+  starts_at timestamptz,
+  ends_at timestamptz,
+  created_at timestamptz DEFAULT now() NOT NULL,
+  CONSTRAINT product_badges_pkey PRIMARY KEY (product_id, badge_id),
+  CONSTRAINT product_badges_product_id_fkey FOREIGN KEY (product_id) REFERENCES catalog.products(id) ON DELETE CASCADE,
+  CONSTRAINT product_badges_badge_id_fkey FOREIGN KEY (badge_id) REFERENCES catalog.badges(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_badges_lookup
+  ON catalog.product_badges (product_id, sort_order);
+
+-- 14. triggers for updated_at
 CREATE OR REPLACE FUNCTION catalog.set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -343,6 +384,11 @@ FOR EACH ROW EXECUTE FUNCTION catalog.set_updated_at();
 DROP TRIGGER IF EXISTS trg_product_discounts_updated_at ON catalog.product_discounts;
 CREATE TRIGGER trg_product_discounts_updated_at
 BEFORE UPDATE ON catalog.product_discounts
+FOR EACH ROW EXECUTE FUNCTION catalog.set_updated_at();
+
+DROP TRIGGER IF EXISTS trg_badges_updated_at ON catalog.badges;
+CREATE TRIGGER trg_badges_updated_at
+BEFORE UPDATE ON catalog.badges
 FOR EACH ROW EXECUTE FUNCTION catalog.set_updated_at();
 
 COMMIT;

@@ -1,3 +1,22 @@
+import type { ProductBadgeItem } from '../badges/badges.types.js';
+
+export interface ProductCardOptionValueItem {
+  id?: string;
+  value: string;
+  position?: number;
+  swatchHex?: string | null;
+  swatchImageUrl?: string | null;
+  inStock?: boolean;
+}
+
+export interface ProductCardOptionItem {
+  id?: string;
+  name: string;
+  displayType: 'text' | 'pill' | 'swatch';
+  showOnCard: boolean;
+  values: ProductCardOptionValueItem[];
+}
+
 export interface ProductRow {
   id: string;
   sku: string;
@@ -14,6 +33,7 @@ export interface ProductRow {
   tags: string[] | null;
   attributes: Record<string, unknown>;
   photo_settings: Record<string, unknown>;
+  card_settings?: Record<string, unknown>;
   source: string;
   external_id: string | null;
   weight_g: number | null;
@@ -25,6 +45,8 @@ export interface ProductRow {
   category_slug?: string | null;
   brand_name?: string | null;
   brand_slug?: string | null;
+  badges?: ProductBadgeItem[];
+  card_options?: ProductCardOptionItem[];
 }
 
 export interface ProductListItem {
@@ -48,6 +70,9 @@ export interface ProductListItem {
   effectivePrice: number;
   createdAt: string;
   updatedAt: string;
+  cardSettings?: Record<string, unknown>;
+  badges?: ProductBadgeItem[];
+  cardOptions?: ProductCardOptionItem[];
 }
 
 export interface ProductVariantOptionValue {
@@ -75,6 +100,8 @@ export interface ProductOptionValue {
   optionId: string;
   value: string;
   position: number;
+  swatchHex?: string | null;
+  swatchImageUrl?: string | null;
 }
 
 export interface ProductOption {
@@ -82,6 +109,8 @@ export interface ProductOption {
   productId: string;
   name: string;
   position: number;
+  displayType: 'text' | 'pill' | 'swatch';
+  showOnCard: boolean;
   values: ProductOptionValue[];
 }
 
@@ -123,6 +152,9 @@ export interface ProductDetail {
   tags: string[];
   attributes: Record<string, unknown>;
   photoSettings: Record<string, unknown>;
+  cardSettings?: Record<string, unknown>;
+  badges?: ProductBadgeItem[];
+  cardOptions?: ProductCardOptionItem[];
   images: ProductImage[];
   options: ProductOption[];
   variants: ProductVariant[];

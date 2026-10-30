@@ -8,7 +8,7 @@ import { slugify } from '../categories/categories.service.js';
 import { EventsService } from '../events/events.service.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
-import { CreateOptionDto } from './dto/create-option.dto.js';
+import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { CreateVariantDto } from './dto/create-variant.dto.js';
 import { ProductQueryDto } from './dto/product-query.dto.js';
@@ -259,6 +259,23 @@ export class ProductsService {
     }
 
     return this.repository.createOption(productId, dto);
+  }
+
+  async updateOption(
+    productId: string,
+    optionId: string,
+    dto: UpdateOptionDto,
+  ): Promise<ProductOption> {
+    const product = await this.repository.findById(productId);
+    if (!product) {
+      throw new NotFoundException(`Product with id '${productId}' not found`);
+    }
+
+    const updated = await this.repository.updateOption(optionId, dto);
+    if (!updated) {
+      throw new NotFoundException(`Option with id '${optionId}' not found`);
+    }
+    return updated;
   }
 
   // --- Images ---
