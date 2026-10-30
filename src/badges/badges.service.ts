@@ -90,15 +90,15 @@ export class BadgesService {
           name: product.name,
           slug: product.slug,
           description: product.description ?? undefined,
-          categoryId: product.category?.id ?? undefined,
-          categorySlug: product.category?.slug ?? undefined,
-          brandId: product.brand?.id ?? undefined,
-          brandName: product.brand?.name ?? undefined,
+          categoryId: product.category_id ?? undefined,
+          categorySlug: product.category_slug ?? undefined,
+          brandId: product.brand_id ?? undefined,
+          brandName: product.brand_name ?? undefined,
           price: product.price,
           stock: product.stock,
           imageUrl: product.images?.[0]?.url,
           status: product.status === 'active' ? 'active' : 'inactive',
-          updatedAt: product.updatedAt,
+          updatedAt: new Date(product.updated_at).toISOString(),
         });
       }
     }

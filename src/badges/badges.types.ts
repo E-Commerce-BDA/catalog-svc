@@ -24,7 +24,13 @@ export interface Badge {
   updatedAt: string;
 }
 
+/**
+ * Row shape of the `product_badges ⋈ badges` query in `getProductBadges`: the
+ * badge id comes from the joined table, everything else is the badge itself
+ * plus the assignment's ordering.
+ */
 export interface ProductBadgeRow {
+  id: string;
   product_id: string;
   badge_id: string;
   sort_order: number;

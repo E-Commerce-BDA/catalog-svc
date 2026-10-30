@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { ProductBadgeItem } from '../badges/badges.types.js';
 import { getPool } from '../db/pool.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
