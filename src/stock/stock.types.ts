@@ -47,6 +47,18 @@ export interface StockCommitResult {
   orderId: string | null;
 }
 
+/**
+ * Result of consuming a hold inside a caller-owned transaction. `outcome`
+ * separates "this call moved the hold" from "it was already committed to the
+ * same order", which the HTTP route ignores and the consumer reports as a
+ * duplicate.
+ */
+export interface StockCommitOutcome {
+  outcome: 'committed' | 'already-committed';
+  reservationId: string;
+  orderId: string | null;
+}
+
 export interface StockReservationView extends StockReservationResult {
   orderId: string | null;
   createdAt: string;

@@ -9,6 +9,8 @@ import { StockReservationScheduler } from './stock-reservations.scheduler.js';
     StockReservationsService,
     StockReservationScheduler,
   ],
-  exports: [StockReservationsService],
+  // The repository is exported for the `order.created` handler, which owns the
+  // transaction that spans the claim and the commit.
+  exports: [StockReservationsService, StockReservationsRepository],
 })
 export class StockModule {}

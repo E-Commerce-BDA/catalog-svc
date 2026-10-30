@@ -7,11 +7,16 @@ import {
 import { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/pool.js';
 import {
+  ReservationClosedError,
+  ReservationMismatchError,
+} from './stock-reservations.errors.js';
+import {
   isTerminal,
   type ExpiredReservation,
   type ReleasedItemResult,
   type ReservedItemResult,
   type ReservationStatus,
+  type StockCommitOutcome,
   type StockCommitResult,
   type StockReleaseResult,
   type StockReservationItem,
@@ -179,57 +184,134 @@ export class StockReservationsRepository {
     }
   }
 
+  /**
+   * Runs `fn` on one pooled connection inside a single transaction. Every
+   * caller of `commitInTransaction` (the HTTP route, the `order.created`
+   * handler) needs the side effect and its `processed_events` claim to land or
+   * vanish together, so the transaction boundary belongs here, not in each.
+   *
+   * The caller's error is rethrown unchanged: a ROLLBACK that itself fails
+   * (lost connection) must not mask the reason the work was abandoned.
+   */
+  async withTransaction<T>(
+    fn: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Connection is gone; the original error is the useful one.
+      }
+      throw this.mapPostgresError(err);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Claims an event id inside the caller's transaction. `false` means it was
+   * already applied, so the side effect must be skipped.
+   *
+   * The row and the side effect commit together, so a rolled-back transaction
+   * leaves no row behind and the redelivery retries the work.
+   */
+  async markProcessed(
+    client: PoolClient,
+    eventId: string,
+    topic: string,
+  ): Promise<boolean> {
+    const res = await client.query<{ event_id: string }>(
+      `INSERT INTO catalog.processed_events (event_id, topic)
+       VALUES ($1, $2)
+       ON CONFLICT (event_id) DO NOTHING
+       RETURNING event_id`,
+      [eventId, topic],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Consumes a held reservation inside a caller-owned transaction.
+   *
+   * No stock write and no movement row: stock was already decremented (with a
+   * `sale` movement) when the hold was taken, so committing only records who
+   * bought it. Re-committing for the same order is idempotent; every other
+   * terminal state throws so the caller can roll back and dead-letter.
+   */
+  async commitInTransaction(
+    client: PoolClient,
+    reservationId: string,
+    orderId?: string,
+  ): Promise<StockCommitOutcome> {
+    const requestedOrderId = orderId ?? null;
+
+    const updated = await client.query<ReservationRow>(
+      `UPDATE catalog.stock_reservations
+          SET status = 'committed',
+              order_id = COALESCE($2::uuid, order_id),
+              updated_at = now()
+        WHERE id = $1 AND status = 'held'
+        RETURNING ${RESERVATION_COLUMNS}`,
+      [reservationId, requestedOrderId],
+    );
+
+    const row = updated.rows[0];
+    if (row) {
+      return {
+        outcome: 'committed',
+        reservationId: row.id,
+        orderId: row.order_id,
+      };
+    }
+
+    const existing = await this.findForUpdate(client, reservationId);
+    if (!existing) {
+      // Retryable: the hold may still be uncommitted in another transaction.
+      throw new NotFoundException(`Reservation ${reservationId} not found`);
+    }
+    if (existing.status === 'committed') {
+      // A request without an order id cannot prove a mismatch, so it stays
+      // idempotent; an event always carries one, and that one is checked.
+      if (
+        existing.order_id &&
+        requestedOrderId &&
+        existing.order_id !== requestedOrderId
+      ) {
+        throw new ReservationMismatchError(
+          reservationId,
+          existing.order_id,
+          requestedOrderId,
+        );
+      }
+      return {
+        outcome: 'already-committed',
+        reservationId,
+        orderId: existing.order_id,
+      };
+    }
+    throw new ReservationClosedError(reservationId, existing.status);
+  }
+
   /** Consumes a held reservation; stock was already decremented at hold time. */
   async commit(
     reservationId: string,
     orderId?: string,
   ): Promise<StockCommitResult> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    const { orderId: committedOrderId } = await this.withTransaction(
+      (client) => this.commitInTransaction(client, reservationId, orderId),
+    );
 
-      const updated = await client.query<ReservationRow>(
-        `UPDATE catalog.stock_reservations
-            SET status = 'committed',
-                order_id = COALESCE($2::uuid, order_id),
-                updated_at = now()
-          WHERE id = $1 AND status = 'held'
-          RETURNING ${RESERVATION_COLUMNS}`,
-        [reservationId, orderId ?? null],
-      );
-
-      if (updated.rows.length > 0) {
-        const row = updated.rows[0];
-        await client.query('COMMIT');
-        return {
-          reservationId: row.id,
-          status: 'committed',
-          orderId: row.order_id,
-        };
-      }
-
-      const existing = await this.findForUpdate(client, reservationId);
-      if (!existing) {
-        throw new NotFoundException(`Reservation ${reservationId} not found`);
-      }
-      if (existing.status === 'committed') {
-        await client.query('COMMIT');
-        return {
-          reservationId,
-          status: 'committed',
-          orderId: existing.order_id,
-        };
-      }
-      throw new ConflictException({
-        code: 'RESERVATION_CLOSED',
-        message: `Reservation ${reservationId} is already ${existing.status}`,
-      });
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw this.mapPostgresError(err);
-    } finally {
-      client.release();
-    }
+    return {
+      reservationId,
+      status: 'committed',
+      orderId: committedOrderId,
+    };
   }
 
   async getById(reservationId: string): Promise<StockReservationView | null> {
