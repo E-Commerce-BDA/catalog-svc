@@ -4,7 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EventsService } from '../events/events.service.js';
+import { withTransaction } from '../db/tx.js';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
 import { CategoriesRepository } from './categories.repository.js';
 import {
   Category,
@@ -27,7 +28,7 @@ export function slugify(text: string): string {
 export class CategoriesService {
   constructor(
     private readonly repository: CategoriesRepository,
-    private readonly eventsService: EventsService,
+    private readonly outbox: CatalogOutbox,
   ) {}
 
   async getNavbarCategories(): Promise<Category[]> {
@@ -81,31 +82,27 @@ export class CategoriesService {
     }
 
     try {
-      const created = await this.repository.create({
-        name: dto.name,
-        slug,
-        parentId: dto.parentId,
-        description: dto.description,
-        imageUrl: dto.imageUrl,
-        isActive: dto.isActive,
-        showInNavbar: dto.showInNavbar,
-        showInMegamenu: dto.showInMegamenu,
-        megamenuShowImages: dto.megamenuShowImages,
-        sortOrder: dto.sortOrder,
-        settings: dto.settings,
-      });
+      return await withTransaction(async (client) => {
+        const created = await this.repository.create(
+          {
+            name: dto.name,
+            slug,
+            parentId: dto.parentId,
+            description: dto.description,
+            imageUrl: dto.imageUrl,
+            isActive: dto.isActive,
+            showInNavbar: dto.showInNavbar,
+            showInMegamenu: dto.showInMegamenu,
+            megamenuShowImages: dto.megamenuShowImages,
+            sortOrder: dto.sortOrder,
+            settings: dto.settings,
+          },
+          client,
+        );
 
-      await this.eventsService.publishCategoryUpdated({
-        categoryId: created.id,
-        name: created.name,
-        slug: created.slug,
-        isActive: created.isActive,
-        imageUrl: created.imageUrl ?? undefined,
-        parentId: created.parentId ?? undefined,
-        updatedAt: created.updatedAt,
+        await this.outbox.recordCategory(client, created);
+        return created;
       });
-
-      return created;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException(`Category with slug '${slug}' already exists`);
@@ -139,53 +136,45 @@ export class CategoriesService {
       }
     }
 
-    const updated = await this.repository.update(id, {
-      name: dto.name,
-      slug: slug ?? dto.slug,
-      parentId: dto.parentId,
-      description: dto.description,
-      imageUrl: dto.imageUrl,
-      isActive: dto.isActive,
-      showInNavbar: dto.showInNavbar,
-      showInMegamenu: dto.showInMegamenu,
-      megamenuShowImages: dto.megamenuShowImages,
-      sortOrder: dto.sortOrder,
-      settings: dto.settings,
+    return withTransaction(async (client) => {
+      const updated = await this.repository.update(
+        id,
+        {
+          name: dto.name,
+          slug: slug ?? dto.slug,
+          parentId: dto.parentId,
+          description: dto.description,
+          imageUrl: dto.imageUrl,
+          isActive: dto.isActive,
+          showInNavbar: dto.showInNavbar,
+          showInMegamenu: dto.showInMegamenu,
+          megamenuShowImages: dto.megamenuShowImages,
+          sortOrder: dto.sortOrder,
+          settings: dto.settings,
+        },
+        client,
+      );
+
+      if (!updated) {
+        throw new NotFoundException(`Category with id '${id}' not found`);
+      }
+
+      await this.outbox.recordCategory(client, updated);
+      return updated;
     });
-
-    if (!updated) {
-      throw new NotFoundException(`Category with id '${id}' not found`);
-    }
-
-    await this.eventsService.publishCategoryUpdated({
-      categoryId: updated.id,
-      name: updated.name,
-      slug: updated.slug,
-      isActive: updated.isActive,
-      imageUrl: updated.imageUrl ?? undefined,
-      parentId: updated.parentId ?? undefined,
-      updatedAt: updated.updatedAt,
-    });
-
-    return updated;
   }
 
   async deleteCategory(id: string): Promise<void> {
-    const existing = await this.repository.findById(id);
-    const deleted = await this.repository.softDelete(id);
-    if (!deleted) {
-      throw new NotFoundException(`Category with id '${id}' not found`);
-    }
+    await withTransaction(async (client) => {
+      const deleted = await this.repository.softDelete(id, client);
+      if (!deleted) {
+        throw new NotFoundException(`Category with id '${id}' not found`);
+      }
 
-    if (existing) {
-      await this.eventsService.publishCategoryUpdated({
-        categoryId: existing.id,
-        name: existing.name,
-        slug: existing.slug,
-        isActive: false,
-        updatedAt: new Date().toISOString(),
-      });
-    }
+      // `softDelete` returns the row it wrote, so `isActive` and `updatedAt`
+      // in the event are the values that committed.
+      await this.outbox.recordCategory(client, deleted);
+    });
   }
 
   private buildTree(categories: Category[]): CategoryTreeItem[] {

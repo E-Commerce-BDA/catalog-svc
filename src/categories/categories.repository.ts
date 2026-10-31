@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { getPool } from '../db/pool.js';
+import type { QueryHandle } from '../db/tx.js';
 import {
   Category,
   CategoryRow,
@@ -41,9 +42,9 @@ export class CategoriesRepository {
     return rows.map(mapCategoryRow);
   }
 
-  async findBySlug(slug: string): Promise<Category | null> {
-    const pool = getPool();
-    const { rows } = await pool.query<CategoryRow>(
+  async findBySlug(slug: string, client?: QueryHandle): Promise<Category | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<CategoryRow>(
       `SELECT id, parent_id, name, slug, description, image_url, is_active,
               show_in_navbar, show_in_megamenu, megamenu_show_images, sort_order,
               settings, created_at, updated_at
@@ -59,9 +60,9 @@ export class CategoriesRepository {
     return mapCategoryRow(rows[0]);
   }
 
-  async findById(id: string): Promise<Category | null> {
-    const pool = getPool();
-    const { rows } = await pool.query<CategoryRow>(
+  async findById(id: string, client?: QueryHandle): Promise<Category | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<CategoryRow>(
       `SELECT id, parent_id, name, slug, description, image_url, is_active,
               show_in_navbar, show_in_megamenu, megamenu_show_images, sort_order,
               settings, created_at, updated_at
@@ -77,9 +78,12 @@ export class CategoriesRepository {
     return mapCategoryRow(rows[0]);
   }
 
-  async create(dto: CreateCategoryDto & { slug: string }): Promise<Category> {
-    const pool = getPool();
-    const { rows } = await pool.query<CategoryRow>(
+  async create(
+    dto: CreateCategoryDto & { slug: string },
+    client?: QueryHandle,
+  ): Promise<Category> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<CategoryRow>(
       `INSERT INTO catalog.categories (
          name, slug, parent_id, description, image_url, is_active,
          show_in_navbar, show_in_megamenu, megamenu_show_images, sort_order, settings
@@ -107,7 +111,11 @@ export class CategoriesRepository {
     return mapCategoryRow(rows[0]);
   }
 
-  async update(id: string, dto: UpdateCategoryDto): Promise<Category | null> {
+  async update(
+    id: string,
+    dto: UpdateCategoryDto,
+    client?: QueryHandle,
+  ): Promise<Category | null> {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -158,12 +166,12 @@ export class CategoriesRepository {
     }
 
     if (fields.length === 0) {
-      return this.findById(id);
+      return this.findById(id, client);
     }
 
     values.push(id);
-    const pool = getPool();
-    const { rows } = await pool.query<CategoryRow>(
+    const q = client ?? getPool();
+    const { rows } = await q.query<CategoryRow>(
       `UPDATE catalog.categories
        SET ${fields.join(', ')}
        WHERE id = $${idx} AND deleted_at IS NULL
@@ -180,16 +188,22 @@ export class CategoriesRepository {
     return mapCategoryRow(rows[0]);
   }
 
-  async softDelete(id: string): Promise<boolean> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
+  /**
+   * Soft-deletes the row and returns what committed, so the caller can record
+   * `category.updated` with `isActive: false` and the row's new `updated_at`.
+   */
+  async softDelete(id: string, client?: QueryHandle): Promise<Category | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<CategoryRow>(
       `UPDATE catalog.categories
        SET deleted_at = now(), is_active = false
        WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id;`,
+       RETURNING id, parent_id, name, slug, description, image_url, is_active,
+                 show_in_navbar, show_in_megamenu, megamenu_show_images, sort_order,
+                 settings, created_at, updated_at;`,
       [id],
     );
 
-    return rows.length > 0;
+    return rows.length > 0 ? mapCategoryRow(rows[0]) : null;
   }
 }

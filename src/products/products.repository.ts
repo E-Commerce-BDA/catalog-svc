@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { ProductBadgeItem } from '../badges/badges.types.js';
 import { getPool } from '../db/pool.js';
+import { withTransaction, type QueryHandle } from '../db/tx.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
@@ -335,11 +336,14 @@ export class ProductsRepository {
     return { data, nextCursor };
   }
 
-  async findDetail(identifier: {
-    slug?: string;
-    id?: string;
-  }): Promise<ProductDetail | null> {
-    const pool = getPool();
+  async findDetail(
+    identifier: {
+      slug?: string;
+      id?: string;
+    },
+    client?: QueryHandle,
+  ): Promise<ProductDetail | null> {
+    const q = client ?? getPool();
     const sql = `
       WITH prod AS (
         SELECT p.*,
@@ -479,7 +483,7 @@ export class ProductsRepository {
       FROM prod;
     `;
 
-    const { rows } = await pool.query<RawPdpRow>(sql, [
+    const { rows } = await q.query<RawPdpRow>(sql, [
       identifier.slug ?? null,
       identifier.id ?? null,
     ]);
@@ -546,9 +550,9 @@ export class ProductsRepository {
     };
   }
 
-  async findById(id: string): Promise<ProductRow | null> {
-    const pool = getPool();
-    const { rows } = await pool.query<ProductRow>(
+  async findById(id: string, client?: QueryHandle): Promise<ProductRow | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<ProductRow>(
       `SELECT * FROM catalog.products WHERE id = $1 AND deleted_at IS NULL;`,
       [id],
     );
@@ -573,9 +577,12 @@ export class ProductsRepository {
     return rows[0] ?? null;
   }
 
-  async create(dto: CreateProductDto & { slug: string }): Promise<ProductDetail> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
+  async create(
+    dto: CreateProductDto & { slug: string },
+    client?: QueryHandle,
+  ): Promise<ProductDetail> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<{ id: string }>(
       `INSERT INTO catalog.products (
          sku, name, slug, short_description, description, category_id, brand_id,
          price, compare_at_price, stock, status, tags, attributes, photo_settings,
@@ -606,11 +613,15 @@ export class ProductsRepository {
       ],
     );
 
-    const created = await this.findDetail({ id: rows[0].id });
+    const created = await this.findDetail({ id: rows[0].id }, q);
     return created!;
   }
 
-  async update(id: string, dto: UpdateProductDto): Promise<ProductDetail | null> {
+  async update(
+    id: string,
+    dto: UpdateProductDto,
+    client?: QueryHandle,
+  ): Promise<ProductDetail | null> {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -682,8 +693,8 @@ export class ProductsRepository {
 
     if (fields.length > 0) {
       values.push(id);
-      const pool = getPool();
-      await pool.query(
+      const q = client ?? getPool();
+      await q.query(
         `UPDATE catalog.products
          SET ${fields.join(', ')}
          WHERE id = $${idx} AND deleted_at IS NULL;`,
@@ -691,33 +702,33 @@ export class ProductsRepository {
       );
     }
 
-    return this.findDetail({ id });
+    return this.findDetail({ id }, client);
   }
 
-  async softDelete(id: string): Promise<boolean> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
+  /**
+   * Soft-deletes the row and returns what committed, so the caller can record
+   * `product.updated` from the same values a reader will see.
+   */
+  async softDelete(id: string, client?: QueryHandle): Promise<ProductRow | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<ProductRow>(
       `UPDATE catalog.products
        SET deleted_at = now(), status = 'archived'
        WHERE id = $1 AND deleted_at IS NULL
-       RETURNING id;`,
+       RETURNING *;`,
       [id],
     );
-    return rows.length > 0;
+    return rows[0] ?? null;
   }
 
   // --- Variants ---
   async createVariant(
     productId: string,
     dto: CreateVariantDto,
+    client?: QueryHandle,
   ): Promise<ProductVariant> {
-    const pool = getPool();
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
-      const { rows } = await client.query<{
+    const insert = async (q: QueryHandle): Promise<ProductVariant> => {
+      const { rows } = await q.query<{
         id: string;
         product_id: string;
         sku: string;
@@ -746,7 +757,7 @@ export class ProductsRepository {
 
       if (dto.options && dto.options.length > 0) {
         for (const opt of dto.options) {
-          await client.query(
+          await q.query(
             `INSERT INTO catalog.product_variant_option_values (variant_id, option_id, option_value_id)
              VALUES ($1, $2, $3)
              ON CONFLICT (variant_id, option_id) DO UPDATE
@@ -755,8 +766,6 @@ export class ProductsRepository {
           );
         }
       }
-
-      await client.query('COMMIT');
 
       return {
         id: variant.id,
@@ -770,17 +779,17 @@ export class ProductsRepository {
         createdAt: new Date(variant.created_at).toISOString(),
         updatedAt: new Date(variant.updated_at).toISOString(),
       };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    };
+
+    // A caller that already owns a transaction passes its client; without one
+    // the variant row and its option values still have to land together.
+    return client ? insert(client) : withTransaction(insert);
   }
 
   async updateVariant(
     id: string,
     dto: UpdateVariantDto,
+    client?: QueryHandle,
   ): Promise<ProductVariant | null> {
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -808,12 +817,12 @@ export class ProductsRepository {
     }
 
     if (fields.length === 0) {
-      return this.findVariantById(id);
+      return this.findVariantById(id, client);
     }
 
     values.push(id);
-    const pool = getPool();
-    const { rows } = await pool.query<{
+    const q = client ?? getPool();
+    const { rows } = await q.query<{
       id: string;
       product_id: string;
       sku: string;
@@ -847,9 +856,12 @@ export class ProductsRepository {
     };
   }
 
-  async findVariantById(id: string): Promise<ProductVariant | null> {
-    const pool = getPool();
-    const { rows } = await pool.query<{
+  async findVariantById(
+    id: string,
+    client?: QueryHandle,
+  ): Promise<ProductVariant | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<{
       id: string;
       product_id: string;
       sku: string;
@@ -879,32 +891,37 @@ export class ProductsRepository {
     };
   }
 
-  async deleteVariant(id: string): Promise<boolean> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
-      `DELETE FROM catalog.product_variants WHERE id = $1 RETURNING id;`,
+  /**
+   * Deletes the variant and returns the product it belonged to, so the caller
+   * can re-read that product inside the same transaction and emit an event
+   * describing what committed.
+   */
+  async deleteVariant(
+    id: string,
+    client?: QueryHandle,
+  ): Promise<string | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<{ product_id: string }>(
+      `DELETE FROM catalog.product_variants WHERE id = $1 RETURNING product_id;`,
       [id],
     );
-    return rows.length > 0;
+    return rows[0]?.product_id ?? null;
   }
 
   // --- Options ---
   async createOption(
     productId: string,
     dto: CreateOptionDto,
+    client?: QueryHandle,
   ): Promise<ProductOption> {
-    const pool = getPool();
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
+    const insert = async (q: QueryHandle): Promise<ProductOption> => {
       const showOnCard =
         dto.cardPlacement !== undefined
           ? dto.cardPlacement !== 'hidden'
           : (dto.showOnCard ?? false);
       const cardPlacement = dto.cardPlacement ?? null;
 
-      const { rows: optRows } = await client.query<{
+      const { rows: optRows } = await q.query<{
         id: string;
         product_id: string;
         name: string;
@@ -943,7 +960,7 @@ export class ProductsRepository {
         const swatchImageUrl =
           typeof item === 'string' ? null : (item.swatchImageUrl ?? null);
 
-        const { rows: valRows } = await client.query<{
+        const { rows: valRows } = await q.query<{
           id: string;
           option_id: string;
           value: string;
@@ -966,7 +983,6 @@ export class ProductsRepository {
         });
       }
 
-      await client.query('COMMIT');
       return {
         id: opt.id,
         productId: opt.product_id,
@@ -977,19 +993,17 @@ export class ProductsRepository {
         position: opt.position,
         values,
       };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    };
+
+    return client ? insert(client) : withTransaction(insert);
   }
 
   async updateOption(
     optionId: string,
     dto: UpdateOptionDto,
+    client?: QueryHandle,
   ): Promise<ProductOption | null> {
-    const pool = getPool();
+    const q = client ?? getPool();
     const fields: string[] = [];
     const values: unknown[] = [optionId];
     let idx = 2;
@@ -1020,13 +1034,13 @@ export class ProductsRepository {
     }
 
     if (fields.length > 0) {
-      await pool.query(
+      await q.query(
         `UPDATE catalog.product_options SET ${fields.join(', ')} WHERE id = $1;`,
         values,
       );
     }
 
-    const { rows: optRows } = await pool.query<{
+    const { rows: optRows } = await q.query<{
       id: string;
       product_id: string;
       name: string;
@@ -1042,7 +1056,7 @@ export class ProductsRepository {
     if (optRows.length === 0) return null;
 
     const opt = optRows[0];
-    const { rows: valRows } = await pool.query<{
+    const { rows: valRows } = await q.query<{
       id: string;
       option_id: string;
       value: string;
@@ -1080,17 +1094,18 @@ export class ProductsRepository {
   async createImage(
     productId: string,
     dto: CreateImageDto,
+    client?: QueryHandle,
   ): Promise<ProductImage> {
-    const pool = getPool();
+    const q = client ?? getPool();
 
     if (dto.isPrimary) {
-      await pool.query(
+      await q.query(
         `UPDATE catalog.product_images SET is_primary = false WHERE product_id = $1;`,
         [productId],
       );
     }
 
-    const { rows } = await pool.query<{
+    const { rows } = await q.query<{
       id: string;
       product_id: string;
       variant_id: string | null;
@@ -1127,7 +1142,11 @@ export class ProductsRepository {
     };
   }
 
-  async updateImage(id: string, dto: UpdateImageDto): Promise<ProductImage | null> {
+  async updateImage(
+    id: string,
+    dto: UpdateImageDto,
+    client?: QueryHandle,
+  ): Promise<ProductImage | null> {
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -1148,8 +1167,8 @@ export class ProductsRepository {
     if (fields.length === 0) return null;
 
     values.push(id);
-    const pool = getPool();
-    const { rows } = await pool.query<{
+    const q = client ?? getPool();
+    const { rows } = await q.query<{
       id: string;
       product_id: string;
       variant_id: string | null;
@@ -1180,9 +1199,9 @@ export class ProductsRepository {
     };
   }
 
-  async deleteImage(id: string): Promise<string | null> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string; product_id: string }>(
+  async deleteImage(id: string, client?: QueryHandle): Promise<string | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<{ id: string; product_id: string }>(
       `DELETE FROM catalog.product_images WHERE id = $1 RETURNING id, product_id;`,
       [id],
     );
@@ -1193,9 +1212,10 @@ export class ProductsRepository {
   async createDiscount(
     productId: string,
     dto: CreateDiscountDto,
+    client?: QueryHandle,
   ): Promise<ProductDiscount> {
-    const pool = getPool();
-    const { rows } = await pool.query<{
+    const q = client ?? getPool();
+    const { rows } = await q.query<{
       id: string;
       product_id: string;
       discount_type: 'percent' | 'fixed';
@@ -1223,12 +1243,19 @@ export class ProductsRepository {
     };
   }
 
-  async deleteDiscount(id: string): Promise<boolean> {
-    const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
-      `DELETE FROM catalog.product_discounts WHERE id = $1 RETURNING id;`,
+  /**
+   * Deletes the discount and returns the product it was attached to, so the
+   * caller can re-read that product inside the same transaction.
+   */
+  async deleteDiscount(
+    id: string,
+    client?: QueryHandle,
+  ): Promise<string | null> {
+    const q = client ?? getPool();
+    const { rows } = await q.query<{ product_id: string }>(
+      `DELETE FROM catalog.product_discounts WHERE id = $1 RETURNING product_id;`,
       [id],
     );
-    return rows.length > 0;
+    return rows[0]?.product_id ?? null;
   }
 }

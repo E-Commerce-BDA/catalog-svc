@@ -3,15 +3,22 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { EventsService } from '../events/events.service.js';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
 import { CategoriesRepository } from './categories.repository.js';
 import { CategoriesService } from './categories.service.js';
 import { Category } from './categories.types.js';
 
+// No database in unit tests: run the mutation callback directly and assert
+// that the outbox write follows the repository call.
+vi.mock('../db/tx.js', () => ({
+  withTransaction: <T>(action: (client: unknown) => Promise<T>): Promise<T> =>
+    action({ query: () => Promise.resolve({ rows: [] }) }),
+}));
+
 describe('CategoriesService', () => {
   let service: CategoriesService;
-  let eventsService: {
-    publishCategoryUpdated: ReturnType<typeof vi.fn>;
+  let outbox: {
+    recordCategory: ReturnType<typeof vi.fn>;
   };
   let repository: {
     findNavbar: ReturnType<typeof vi.fn>;
@@ -67,12 +74,12 @@ describe('CategoriesService', () => {
       update: vi.fn(),
       softDelete: vi.fn(),
     };
-    eventsService = {
-      publishCategoryUpdated: vi.fn(),
+    outbox = {
+      recordCategory: vi.fn(),
     };
     service = new CategoriesService(
       repository as unknown as CategoriesRepository,
-      eventsService as unknown as EventsService,
+      outbox as unknown as CatalogOutbox,
     );
   });
 
@@ -121,6 +128,11 @@ describe('CategoriesService', () => {
     expect(result.slug).toBe('new-arrivals');
     expect(repository.create).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'New Arrivals', slug: 'new-arrivals' }),
+      expect.anything(),
+    );
+    expect(outbox.recordCategory).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ slug: 'new-arrivals' }),
     );
   });
 
@@ -141,10 +153,20 @@ describe('CategoriesService', () => {
   });
 
   it('soft deletes category or throws NotFoundException', async () => {
-    repository.softDelete.mockResolvedValue(true);
+    repository.softDelete.mockResolvedValue({
+      ...sampleCategory,
+      isActive: false,
+    });
     await expect(service.deleteCategory(sampleCategory.id)).resolves.toBeUndefined();
 
-    repository.softDelete.mockResolvedValue(false);
+    // The event describes what committed, so `isActive` comes from the row the
+    // UPDATE returned rather than from a pre-read snapshot.
+    expect(outbox.recordCategory).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ isActive: false }),
+    );
+
+    repository.softDelete.mockResolvedValue(null);
     await expect(service.deleteCategory('unknown-id')).rejects.toThrow(
       NotFoundException,
     );

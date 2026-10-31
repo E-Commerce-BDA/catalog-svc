@@ -11,6 +11,7 @@ import { ProductsModule } from './products/products.module.js';
 import { InventoryModule } from './inventory/inventory.module.js';
 import { InternalModule } from './internal/internal.module.js';
 import { EventsModule } from './events/events.module.js';
+import { CatalogOutboxModule } from './outbox/catalog-outbox.module.js';
 import { StockModule } from './stock/stock.module.js';
 import { BadgesModule } from './badges/badges.module.js';
 import Joi from 'joi';
@@ -25,6 +26,9 @@ import Joi from 'joi';
         JWT_SECRET: Joi.string().min(32).required(),
         KAFKA_BROKERS: Joi.string().default('localhost:9092'),
         KAFKA_CONSUMER_ENABLED: Joi.boolean().default(true),
+        // Set by the e2e suite: the relay must not drain a shared test database
+        // behind the assertions.
+        DISABLE_OUTBOX_RELAY: Joi.boolean().default(false),
         STOCK_RESERVATION_TTL_SECONDS: Joi.number()
           .integer()
           .min(60)
@@ -33,6 +37,9 @@ import Joi from 'joi';
     }),
     ScheduleModule.forRoot(),
     EventsModule,
+    // Owns `catalog.outbox` and drains it; global, so products, categories and
+    // badges can all inject `CatalogOutbox`.
+    CatalogOutboxModule,
     HealthModule,
     DbModule,
     AuthModule,

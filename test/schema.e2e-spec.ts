@@ -30,7 +30,7 @@ describe('Catalog Schema (e2e)', () => {
     await closePool();
   });
 
-  it('1. all 17 base tables exist in catalog schema', async () => {
+  it('1. all 18 base tables exist in catalog schema', async () => {
     const { rows } = await client.query<{ table_name: string }>(
       `SELECT table_name 
        FROM information_schema.tables 
@@ -43,6 +43,7 @@ describe('Catalog Schema (e2e)', () => {
       'badges',
       'brands',
       'categories',
+      'outbox',
       'processed_events',
       'product_attribute_values',
       'product_attributes',
@@ -103,6 +104,7 @@ describe('Catalog Schema (e2e)', () => {
       'idx_reviews_user_id',
       'idx_badges_active',
       'idx_product_badges_lookup',
+      'idx_outbox_pending',
     ];
 
     for (const expected of expectedIndexes) {
@@ -505,5 +507,99 @@ describe('Catalog Schema (e2e)', () => {
       ),
     ).rejects.toThrow(/processed_events_pkey/);
     await client.query('ROLLBACK TO SAVEPOINT processed_sp');
+  });
+
+  it('22. keeps catalog.outbox consistent with the envelope it stores', async () => {
+    const { rows: columns } = await client.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'catalog' AND table_name = 'outbox'
+       ORDER BY ordinal_position;`,
+    );
+
+    // `envelope` is NOT NULL: a row without a publishable envelope is a row the
+    // relay can never drain, which is exactly what cat-007 removes.
+    const envelope = columns.find((c) => c.column_name === 'envelope');
+    expect(envelope).toEqual({
+      column_name: 'envelope',
+      data_type: 'jsonb',
+      is_nullable: 'NO',
+    });
+
+    const productId = randomUUID();
+    const eventId = randomUUID();
+    const insert = `INSERT INTO catalog.outbox
+        (event_id, aggregate_type, aggregate_id, event_type, envelope)
+      VALUES ($1::uuid, $2, $3::uuid, $4, $5::jsonb)`;
+
+    const envelopeFor = (overrides: Record<string, string> = {}) =>
+      JSON.stringify({
+        id: overrides.id ?? eventId,
+        type: overrides.type ?? 'product.updated',
+        payload: {
+          productId: overrides.productId ?? productId,
+          name: 'Outbox Fixture',
+          slug: 'outbox-fixture',
+          price: 10,
+          status: 'active',
+          updatedAt: '2026-10-31T00:00:00.000Z',
+        },
+      });
+
+    await client.query(insert, [
+      eventId,
+      'product',
+      productId,
+      'product.updated',
+      envelopeFor(),
+    ]);
+
+    // Every rejected insert below keeps the row and the envelope in agreement
+    // except for the one field under test, so the constraint that fires is the
+    // one being asserted on.
+    const attempt = (
+      rowEventId: string,
+      eventType: string,
+      overrides: Record<string, string> = {},
+    ) =>
+      client.query(insert, [
+        rowEventId,
+        'product',
+        productId,
+        eventType,
+        envelopeFor({ id: rowEventId, ...overrides }),
+      ]);
+
+    // The envelope is the wire contract, so its identity has to match the row's.
+    await client.query('SAVEPOINT outbox_id_sp');
+    await expect(
+      attempt(randomUUID(), 'product.updated', { id: randomUUID() }),
+    ).rejects.toThrow(/outbox_envelope_id_matches/);
+    await client.query('ROLLBACK TO SAVEPOINT outbox_id_sp');
+
+    await client.query('SAVEPOINT outbox_type_sp');
+    await expect(
+      attempt(randomUUID(), 'product.updated', { type: 'category.updated' }),
+    ).rejects.toThrow(/outbox_envelope_type_matches/);
+    await client.query('ROLLBACK TO SAVEPOINT outbox_type_sp');
+
+    // The aggregate id is the partition key, so the payload cannot name a
+    // different product than the row.
+    await client.query('SAVEPOINT outbox_aggregate_sp');
+    await expect(
+      attempt(randomUUID(), 'product.updated', { productId: randomUUID() }),
+    ).rejects.toThrow(/outbox_aggregate_matches_envelope/);
+    await client.query('ROLLBACK TO SAVEPOINT outbox_aggregate_sp');
+
+    // Only the two topics cat-007 publishes are addressable in this table.
+    await client.query('SAVEPOINT outbox_topic_sp');
+    await expect(
+      attempt(randomUUID(), 'product.deleted', { type: 'product.deleted' }),
+    ).rejects.toThrow(/outbox_event_type_check/);
+    await client.query('ROLLBACK TO SAVEPOINT outbox_topic_sp');
   });
 });

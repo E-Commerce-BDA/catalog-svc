@@ -1,39 +1,24 @@
 import { Global, Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { StockModule } from '../stock/stock.module.js';
 import { ConsumerMetrics } from './consumer-metrics.js';
 import { ConsumerStatsController } from './consumer-stats.controller.js';
-import { EVENT_BUS_TOKEN } from './event-bus/event-bus.interface.js';
-import { KafkaEventBus } from './event-bus/kafka-event-bus.js';
-import { InMemoryEventBus } from './event-bus/in-memory-event-bus.js';
-import { EventsService } from './events.service.js';
 import { KafkaOrderConsumer } from './order-created/kafka-order-consumer.js';
 import { OrderCreatedHandler } from './order-created/order-created.handler.js';
 
+/**
+ * The consume side of catalog-svc.
+ *
+ * Publishing moved to `CatalogOutbox` (cat-007): every outgoing event is a row
+ * in `catalog.outbox` that the relay drains. What is left here only *reads*
+ * from Kafka — `order.created` drives stock reservations — so there is no
+ * producer path in this module any more.
+ */
 @Global()
 @Module({
   // The handler owns the transaction, but the repository that runs it lives in
   // StockModule and is only reachable if that module is imported here.
   imports: [StockModule],
   controllers: [ConsumerStatsController],
-  providers: [
-    {
-      provide: EVENT_BUS_TOKEN,
-      useFactory: (configService: ConfigService) => {
-        const brokers = configService.get<string>('KAFKA_BROKERS');
-        if (process.env.NODE_ENV === 'test' || !brokers) {
-          return new InMemoryEventBus();
-        }
-        return new KafkaEventBus(configService);
-      },
-      inject: [ConfigService],
-    },
-    EventsService,
-    ConsumerMetrics,
-    OrderCreatedHandler,
-    KafkaOrderConsumer,
-  ],
-  exports: [EVENT_BUS_TOKEN, EventsService],
+  providers: [ConsumerMetrics, OrderCreatedHandler, KafkaOrderConsumer],
 })
 export class EventsModule {}
-

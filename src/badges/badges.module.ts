@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { EventsModule } from '../events/events.module.js';
 import { ProductsModule } from '../products/products.module.js';
 import {
   BadgesController,
@@ -9,7 +8,9 @@ import { BadgesRepository } from './badges.repository.js';
 import { BadgesService } from './badges.service.js';
 
 @Module({
-  imports: [EventsModule, ProductsModule],
+  // `ProductsModule` supplies the repository used to rebuild the
+  // `product.updated` payload after a badge assignment.
+  imports: [ProductsModule],
   controllers: [BadgesController, ProductBadgesController],
   providers: [BadgesService, BadgesRepository],
   exports: [BadgesService, BadgesRepository],

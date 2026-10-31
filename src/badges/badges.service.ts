@@ -4,7 +4,8 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { EventsService } from '../events/events.service.js';
+import { withTransaction, type QueryHandle } from '../db/tx.js';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
 import { ProductsRepository } from '../products/products.repository.js';
 import { BadgesRepository } from './badges.repository.js';
 import { Badge, ProductBadgeItem } from './badges.types.js';
@@ -16,7 +17,7 @@ import { UpdateBadgeDto } from './dto/update-badge.dto.js';
 export class BadgesService {
   constructor(
     private readonly badgesRepository: BadgesRepository,
-    @Optional() private readonly eventsService?: EventsService,
+    private readonly outbox: CatalogOutbox,
     @Optional() private readonly productsRepository?: ProductsRepository,
   ) {}
 
@@ -76,33 +77,36 @@ export class BadgesService {
     productId: string,
     dto: AssignProductBadgesDto,
   ): Promise<ProductBadgeItem[]> {
-    const assigned = await this.badgesRepository.assignProductBadges(
-      productId,
-      dto.badges,
-    );
+    return withTransaction(async (client) => {
+      const assigned = await this.badgesRepository.assignProductBadges(
+        productId,
+        dto.badges,
+        client,
+      );
 
-    if (this.eventsService && this.productsRepository) {
-      const product = await this.productsRepository.findById(productId);
-      if (product) {
-        await this.eventsService.publishProductUpdated({
-          productId: product.id,
-          sku: product.sku,
-          name: product.name,
-          slug: product.slug,
-          description: product.description ?? undefined,
-          categoryId: product.category_id ?? undefined,
-          categorySlug: product.category_slug ?? undefined,
-          brandId: product.brand_id ?? undefined,
-          brandName: product.brand_name ?? undefined,
-          price: product.price,
-          stock: product.stock,
-          imageUrl: product.images?.[0]?.url,
-          status: product.status === 'active' ? 'active' : 'inactive',
-          updatedAt: new Date(product.updated_at).toISOString(),
-        });
-      }
-    }
+      await this.recordProductUpdated(client, productId);
+      return assigned;
+    });
+  }
 
-    return assigned;
+  /**
+   * Badge assignments change what a storefront card shows, so they emit
+   * `product.updated` like any other product mutation. The product is read
+   * through the transaction client so the payload matches what commits.
+   *
+   * `ProductsRepository` stays optional only so this service can be
+   * constructed without it in unit tests; `BadgesModule` always imports
+   * `ProductsModule`, so the production wiring always has it.
+   */
+  private async recordProductUpdated(
+    client: QueryHandle,
+    productId: string,
+  ): Promise<void> {
+    if (!this.productsRepository) return;
+
+    const product = await this.productsRepository.findById(productId, client);
+    if (!product) return;
+
+    await this.outbox.recordProduct(client, product);
   }
 }

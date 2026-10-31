@@ -1,10 +1,24 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
+import { ProductsRepository } from '../products/products.repository.js';
 import { BadgesRepository } from './badges.repository.js';
 import { BadgesService } from './badges.service.js';
 import { Badge, ProductBadgeItem } from './badges.types.js';
 
+// No database in unit tests: run the mutation callback directly.
+vi.mock('../db/tx.js', () => ({
+  withTransaction: <T>(action: (client: unknown) => Promise<T>): Promise<T> =>
+    action({ query: () => Promise.resolve({ rows: [] }) }),
+}));
+
 describe('BadgesService', () => {
   let service: BadgesService;
+  let outbox: {
+    recordProduct: ReturnType<typeof vi.fn>;
+  };
+  let productsRepository: {
+    findById: ReturnType<typeof vi.fn>;
+  };
   let repository: {
     findAll: ReturnType<typeof vi.fn>;
     findById: ReturnType<typeof vi.fn>;
@@ -39,7 +53,17 @@ describe('BadgesService', () => {
       getProductBadges: vi.fn(),
       assignProductBadges: vi.fn(),
     };
-    service = new BadgesService(repository as unknown as BadgesRepository);
+    outbox = {
+      recordProduct: vi.fn(),
+    };
+    productsRepository = {
+      findById: vi.fn(),
+    };
+    service = new BadgesService(
+      repository as unknown as BadgesRepository,
+      outbox as unknown as CatalogOutbox,
+      productsRepository as unknown as ProductsRepository,
+    );
   });
 
   it('retrieves badges list with filter', async () => {
@@ -110,10 +134,26 @@ describe('BadgesService', () => {
       },
     ];
     repository.assignProductBadges.mockResolvedValue(assigned);
+    productsRepository.findById.mockResolvedValue({
+      id: 'p1',
+      sku: 'TEE-MAIN',
+      name: 'Fixture Tee',
+      slug: 'fixture-tee',
+      status: 'active',
+      price: 79.99,
+      stock: 150,
+      updated_at: new Date('2026-10-30T00:00:00.000Z'),
+    });
 
     const result = await service.assignProductBadges('p1', {
       badges: [{ badgeId: sampleBadge.id, sortOrder: 0 }],
     });
     expect(result).toEqual(assigned);
+    // Badge assignment changes what a card renders, so it emits like any other
+    // product mutation (cat-007 coverage expansion).
+    expect(outbox.recordProduct).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'p1' }),
+    );
   });
 });

@@ -5,7 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { slugify } from '../categories/categories.service.js';
-import { EventsService } from '../events/events.service.js';
+import { withTransaction, type QueryHandle } from '../db/tx.js';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
@@ -29,7 +30,7 @@ import {
 export class ProductsService {
   constructor(
     private readonly repository: ProductsRepository,
-    private readonly eventsService: EventsService,
+    private readonly outbox: CatalogOutbox,
   ) {}
 
   async getProducts(
@@ -75,45 +76,34 @@ export class ProductsService {
     }
 
     try {
-      const created = await this.repository.create({
-        sku: dto.sku,
-        name: dto.name,
-        slug,
-        shortDescription: dto.shortDescription,
-        description: dto.description,
-        categoryId: dto.categoryId,
-        brandId: dto.brandId,
-        price: dto.price,
-        compareAtPrice: dto.compareAtPrice,
-        stock: dto.stock,
-        status: dto.status,
-        tags: dto.tags,
-        attributes: dto.attributes,
-        photoSettings: dto.photoSettings,
-        cardSettings: dto.cardSettings,
-        source: dto.source,
-        externalId: dto.externalId,
-        weightG: dto.weightG,
-      });
+      return await withTransaction(async (client) => {
+        const created = await this.repository.create(
+          {
+            sku: dto.sku,
+            name: dto.name,
+            slug,
+            shortDescription: dto.shortDescription,
+            description: dto.description,
+            categoryId: dto.categoryId,
+            brandId: dto.brandId,
+            price: dto.price,
+            compareAtPrice: dto.compareAtPrice,
+            stock: dto.stock,
+            status: dto.status,
+            tags: dto.tags,
+            attributes: dto.attributes,
+            photoSettings: dto.photoSettings,
+            cardSettings: dto.cardSettings,
+            source: dto.source,
+            externalId: dto.externalId,
+            weightG: dto.weightG,
+          },
+          client,
+        );
 
-      await this.eventsService.publishProductUpdated({
-        productId: created.id,
-        sku: created.sku,
-        name: created.name,
-        slug: created.slug,
-        description: created.description ?? undefined,
-        categoryId: created.category?.id ?? undefined,
-        categorySlug: created.category?.slug ?? undefined,
-        brandId: created.brand?.id ?? undefined,
-        brandName: created.brand?.name ?? undefined,
-        price: created.price,
-        stock: created.stock,
-        imageUrl: created.images?.[0]?.url,
-        status: created.status === 'active' ? 'active' : 'inactive',
-        updatedAt: created.updatedAt,
+        await this.outbox.recordProduct(client, created);
+        return created;
       });
-
-      return created;
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException('Product SKU or slug conflict');
@@ -144,67 +134,50 @@ export class ProductsService {
       }
     }
 
-    const updated = await this.repository.update(id, {
-      sku: dto.sku,
-      name: dto.name,
-      slug: slug ?? dto.slug,
-      shortDescription: dto.shortDescription,
-      description: dto.description,
-      categoryId: dto.categoryId,
-      brandId: dto.brandId,
-      price: dto.price,
-      compareAtPrice: dto.compareAtPrice,
-      stock: dto.stock,
-      status: dto.status,
-      tags: dto.tags,
-      attributes: dto.attributes,
-      photoSettings: dto.photoSettings,
-      cardSettings: dto.cardSettings,
-      weightG: dto.weightG,
+    return withTransaction(async (client) => {
+      const updated = await this.repository.update(
+        id,
+        {
+          sku: dto.sku,
+          name: dto.name,
+          slug: slug ?? dto.slug,
+          shortDescription: dto.shortDescription,
+          description: dto.description,
+          categoryId: dto.categoryId,
+          brandId: dto.brandId,
+          price: dto.price,
+          compareAtPrice: dto.compareAtPrice,
+          stock: dto.stock,
+          status: dto.status,
+          tags: dto.tags,
+          attributes: dto.attributes,
+          photoSettings: dto.photoSettings,
+          cardSettings: dto.cardSettings,
+          weightG: dto.weightG,
+        },
+        client,
+      );
+
+      if (!updated) {
+        throw new NotFoundException(`Product with id '${id}' not found`);
+      }
+
+      // `update` re-reads the detail through the same client, so the payload
+      // describes the row exactly as it is about to commit.
+      await this.outbox.recordProduct(client, updated);
+      return updated;
     });
-
-    if (!updated) {
-      throw new NotFoundException(`Product with id '${id}' not found`);
-    }
-
-    await this.eventsService.publishProductUpdated({
-      productId: updated.id,
-      sku: updated.sku,
-      name: updated.name,
-      slug: updated.slug,
-      description: updated.description ?? undefined,
-      categoryId: updated.category?.id ?? undefined,
-      categorySlug: updated.category?.slug ?? undefined,
-      brandId: updated.brand?.id ?? undefined,
-      brandName: updated.brand?.name ?? undefined,
-      price: updated.price,
-      stock: updated.stock,
-      imageUrl: updated.images?.[0]?.url,
-      status: updated.status === 'active' ? 'active' : 'inactive',
-      updatedAt: updated.updatedAt,
-    });
-
-    return updated;
   }
 
   async deleteProduct(id: string): Promise<void> {
-    const existing = await this.repository.findById(id);
-    const deleted = await this.repository.softDelete(id);
-    if (!deleted) {
-      throw new NotFoundException(`Product with id '${id}' not found`);
-    }
+    await withTransaction(async (client) => {
+      const deleted = await this.repository.softDelete(id, client);
+      if (!deleted) {
+        throw new NotFoundException(`Product with id '${id}' not found`);
+      }
 
-    if (existing) {
-      await this.eventsService.publishProductUpdated({
-        productId: existing.id,
-        sku: existing.sku,
-        name: existing.name,
-        slug: existing.slug,
-        price: existing.price,
-        status: 'inactive',
-        updatedAt: new Date().toISOString(),
-      });
-    }
+      await this.outbox.recordProduct(client, deleted);
+    });
   }
 
   // --- Variants ---
@@ -218,7 +191,15 @@ export class ProductsService {
     }
 
     try {
-      return await this.repository.createVariant(productId, dto);
+      return await withTransaction(async (client) => {
+        const variant = await this.repository.createVariant(
+          productId,
+          dto,
+          client,
+        );
+        await this.recordProductUpdated(client, productId);
+        return variant;
+      });
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('unique constraint')) {
         throw new ConflictException(`Variant with SKU '${dto.sku}' already exists`);
@@ -236,38 +217,23 @@ export class ProductsService {
       throw new NotFoundException(`Variant with id '${id}' not found`);
     }
 
-    const updated = await this.repository.updateVariant(id, dto);
-    if (!updated) {
-      throw new NotFoundException(`Variant with id '${id}' not found`);
-    }
-    return updated;
+    return withTransaction(async (client) => {
+      const updated = await this.repository.updateVariant(id, dto, client);
+      if (!updated) {
+        throw new NotFoundException(`Variant with id '${id}' not found`);
+      }
+      await this.recordProductUpdated(client, updated.productId);
+      return updated;
+    });
   }
 
   async deleteVariant(id: string): Promise<void> {
-    const deleted = await this.repository.deleteVariant(id);
-    if (!deleted) {
-      throw new NotFoundException(`Variant with id '${id}' not found`);
-    }
-  }
-
-  async publishProductUpdatedById(productId: string): Promise<void> {
-    const product = await this.repository.findById(productId);
-    if (!product) return;
-    await this.eventsService.publishProductUpdated({
-      productId: product.id,
-      sku: product.sku,
-      name: product.name,
-      slug: product.slug,
-      description: product.description ?? undefined,
-      categoryId: product.category_id ?? undefined,
-      categorySlug: product.category_slug ?? undefined,
-      brandId: product.brand_id ?? undefined,
-      brandName: product.brand_name ?? undefined,
-      price: product.price,
-      stock: product.stock,
-      imageUrl: product.images?.[0]?.url,
-      status: product.status === 'active' ? 'active' : 'inactive',
-      updatedAt: new Date(product.updated_at).toISOString(),
+    await withTransaction(async (client) => {
+      const productId = await this.repository.deleteVariant(id, client);
+      if (!productId) {
+        throw new NotFoundException(`Variant with id '${id}' not found`);
+      }
+      await this.recordProductUpdated(client, productId);
     });
   }
 
@@ -281,9 +247,11 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${productId}' not found`);
     }
 
-    const created = await this.repository.createOption(productId, dto);
-    await this.publishProductUpdatedById(productId);
-    return created;
+    return withTransaction(async (client) => {
+      const created = await this.repository.createOption(productId, dto, client);
+      await this.recordProductUpdated(client, productId);
+      return created;
+    });
   }
 
   async updateOption(
@@ -296,12 +264,14 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${productId}' not found`);
     }
 
-    const updated = await this.repository.updateOption(optionId, dto);
-    if (!updated) {
-      throw new NotFoundException(`Option with id '${optionId}' not found`);
-    }
-    await this.publishProductUpdatedById(productId);
-    return updated;
+    return withTransaction(async (client) => {
+      const updated = await this.repository.updateOption(optionId, dto, client);
+      if (!updated) {
+        throw new NotFoundException(`Option with id '${optionId}' not found`);
+      }
+      await this.recordProductUpdated(client, productId);
+      return updated;
+    });
   }
 
   // --- Images ---
@@ -314,28 +284,32 @@ export class ProductsService {
       throw new NotFoundException(`Product with id '${productId}' not found`);
     }
 
-    const created = await this.repository.createImage(productId, dto);
-    await this.publishProductUpdatedById(productId);
-    return created;
+    return withTransaction(async (client) => {
+      const created = await this.repository.createImage(productId, dto, client);
+      await this.recordProductUpdated(client, productId);
+      return created;
+    });
   }
 
   async updateImage(id: string, dto: UpdateImageDto): Promise<ProductImage> {
-    const updated = await this.repository.updateImage(id, dto);
-    if (!updated) {
-      throw new NotFoundException(`Image with id '${id}' not found`);
-    }
-    if (updated.productId) {
-      await this.publishProductUpdatedById(updated.productId);
-    }
-    return updated;
+    return withTransaction(async (client) => {
+      const updated = await this.repository.updateImage(id, dto, client);
+      if (!updated) {
+        throw new NotFoundException(`Image with id '${id}' not found`);
+      }
+      await this.recordProductUpdated(client, updated.productId);
+      return updated;
+    });
   }
 
   async deleteImage(id: string): Promise<void> {
-    const productId = await this.repository.deleteImage(id);
-    if (!productId) {
-      throw new NotFoundException(`Image with id '${id}' not found`);
-    }
-    await this.publishProductUpdatedById(productId);
+    await withTransaction(async (client) => {
+      const productId = await this.repository.deleteImage(id, client);
+      if (!productId) {
+        throw new NotFoundException(`Image with id '${id}' not found`);
+      }
+      await this.recordProductUpdated(client, productId);
+    });
   }
 
   // --- Discounts ---
@@ -352,13 +326,39 @@ export class ProductsService {
       throw new BadRequestException('Percentage discount cannot exceed 100%');
     }
 
-    return this.repository.createDiscount(productId, dto);
+    return withTransaction(async (client) => {
+      const created = await this.repository.createDiscount(
+        productId,
+        dto,
+        client,
+      );
+      await this.recordProductUpdated(client, productId);
+      return created;
+    });
   }
 
   async deleteDiscount(id: string): Promise<void> {
-    const deleted = await this.repository.deleteDiscount(id);
-    if (!deleted) {
-      throw new NotFoundException(`Discount with id '${id}' not found`);
-    }
+    await withTransaction(async (client) => {
+      const productId = await this.repository.deleteDiscount(id, client);
+      if (!productId) {
+        throw new NotFoundException(`Discount with id '${id}' not found`);
+      }
+      await this.recordProductUpdated(client, productId);
+    });
+  }
+
+  /**
+   * Records `product.updated` for a product changed through one of its child
+   * rows. The read uses the caller's transaction client, so the payload
+   * describes the product as it will commit — for the delete paths that means
+   * reading after the child row is gone, which is the state consumers need.
+   */
+  private async recordProductUpdated(
+    client: QueryHandle,
+    productId: string,
+  ): Promise<void> {
+    const product = await this.repository.findById(productId, client);
+    if (!product) return;
+    await this.outbox.recordProduct(client, product);
   }
 }

@@ -3,15 +3,24 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { EventsService } from '../events/events.service.js';
+import { CatalogOutbox } from '../outbox/catalog-outbox.js';
 import { ProductsRepository } from './products.repository.js';
 import { ProductsService } from './products.service.js';
 import { ProductDetail, ProductListItem } from './products.types.js';
 
+// The service opens a transaction around every mutation. Unit tests have no
+// database, so the helper is replaced with one that just runs the callback —
+// which is also what makes the tests assert the *sequence* (repository call,
+// then outbox write) rather than the transaction mechanics.
+vi.mock('../db/tx.js', () => ({
+  withTransaction: <T>(action: (client: unknown) => Promise<T>): Promise<T> =>
+    action({ query: () => Promise.resolve({ rows: [] }) }),
+}));
+
 describe('ProductsService', () => {
   let service: ProductsService;
-  let eventsService: {
-    publishProductUpdated: ReturnType<typeof vi.fn>;
+  let outbox: {
+    recordProduct: ReturnType<typeof vi.fn>;
   };
   let repository: {
     findList: ReturnType<typeof vi.fn>;
@@ -103,12 +112,12 @@ describe('ProductsService', () => {
       createDiscount: vi.fn(),
       deleteDiscount: vi.fn(),
     };
-    eventsService = {
-      publishProductUpdated: vi.fn(),
+    outbox = {
+      recordProduct: vi.fn(),
     };
     service = new ProductsService(
       repository as unknown as ProductsRepository,
-      eventsService as unknown as EventsService,
+      outbox as unknown as CatalogOutbox,
     );
   });
 
@@ -152,6 +161,10 @@ describe('ProductsService', () => {
 
     expect(res).toEqual(sampleDetail);
     expect(repository.create).toHaveBeenCalled();
+    expect(outbox.recordProduct).toHaveBeenCalledWith(
+      expect.anything(),
+      sampleDetail,
+    );
   });
 
   it('throws ConflictException on duplicate SKU', async () => {
@@ -187,6 +200,55 @@ describe('ProductsService', () => {
     });
 
     expect(variant.sku).toBe('TEE-BLK-S');
+    // Added in cat-007: a variant that changes stock or price has to move the
+    // storefront card, and before this the mutation emitted nothing at all.
+    expect(outbox.recordProduct).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: sampleDetail.id }),
+    );
+  });
+
+  it('deleting a variant emits product.updated for its product', async () => {
+    repository.deleteVariant.mockResolvedValue(sampleDetail.id);
+    repository.findById.mockResolvedValue({
+      id: sampleDetail.id,
+      sku: sampleDetail.sku,
+      name: sampleDetail.name,
+      slug: sampleDetail.slug,
+      status: 'active',
+      price: 79.99,
+      stock: 150,
+      updated_at: new Date('2026-10-27T00:00:00.000Z'),
+    });
+
+    await service.deleteVariant('variant-1');
+
+    expect(repository.deleteVariant).toHaveBeenCalled();
+    expect(outbox.recordProduct).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: sampleDetail.id }),
+    );
+  });
+
+  it('deleting a discount emits product.updated for its product', async () => {
+    repository.deleteDiscount.mockResolvedValue(sampleDetail.id);
+    repository.findById.mockResolvedValue({
+      id: sampleDetail.id,
+      sku: sampleDetail.sku,
+      name: sampleDetail.name,
+      slug: sampleDetail.slug,
+      status: 'active',
+      price: 79.99,
+      stock: 150,
+      updated_at: new Date('2026-10-27T00:00:00.000Z'),
+    });
+
+    await service.deleteDiscount('discount-1');
+
+    expect(outbox.recordProduct).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: sampleDetail.id }),
+    );
   });
 
   it('throws BadRequestException if percentage discount exceeds 100', async () => {

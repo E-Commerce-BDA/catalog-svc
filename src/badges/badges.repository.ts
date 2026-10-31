@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { getPool } from '../db/pool.js';
+import { withTransaction, type QueryHandle } from '../db/tx.js';
 import {
   Badge,
   BadgeRow,
@@ -137,15 +138,16 @@ export class BadgesRepository {
   async getProductBadges(
     productId: string,
     options: { activeOnly?: boolean } = { activeOnly: true },
+    client?: QueryHandle,
   ): Promise<ProductBadgeItem[]> {
-    const pool = getPool();
+    const q = client ?? getPool();
     const activeCondition = options.activeOnly
       ? `AND b.is_active = true
          AND (pb.starts_at IS NULL OR pb.starts_at <= now())
          AND (pb.ends_at IS NULL OR pb.ends_at >= now())`
       : '';
 
-    const { rows } = await pool.query<ProductBadgeRow>(
+    const { rows } = await q.query<ProductBadgeRow>(
       `SELECT b.id, b.key, b.label, b.bg, b.text_color, b.border_color, b.border_style, pb.sort_order
        FROM catalog.product_badges pb
        JOIN catalog.badges b ON pb.badge_id = b.id
@@ -169,20 +171,17 @@ export class BadgesRepository {
   async assignProductBadges(
     productId: string,
     assignments: ProductBadgeAssignmentItemDto[],
+    client?: QueryHandle,
   ): Promise<ProductBadgeItem[]> {
-    const pool = getPool();
-    const client = await pool.connect();
-
-    try {
-      await client.query('BEGIN');
-      await client.query(
+    const replace = async (q: QueryHandle): Promise<void> => {
+      await q.query(
         `DELETE FROM catalog.product_badges WHERE product_id = $1;`,
         [productId],
       );
 
       for (let i = 0; i < assignments.length; i++) {
         const item = assignments[i];
-        await client.query(
+        await q.query(
           `INSERT INTO catalog.product_badges (product_id, badge_id, sort_order, starts_at, ends_at)
            VALUES ($1, $2, $3, $4, $5);`,
           [
@@ -194,15 +193,16 @@ export class BadgesRepository {
           ],
         );
       }
+    };
 
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    // A caller that already owns a transaction passes its client so the badge
+    // rows and the resulting `product.updated` event land together.
+    if (client) {
+      await replace(client);
+    } else {
+      await withTransaction(replace);
     }
 
-    return this.getProductBadges(productId, { activeOnly: false });
+    return this.getProductBadges(productId, { activeOnly: false }, client);
   }
 }
