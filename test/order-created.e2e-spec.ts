@@ -253,12 +253,19 @@ describe('order.created consumer (e2e)', () => {
       .set('x-service-key', serviceKey)
       .expect(200);
 
-    expect(res.body).toEqual({
+    // Additive since cat-008: the five counters cat-007 reported are unchanged,
+    // and the position of the group (`lag`, `lastCommit`) joins them. No lag
+    // sample has run in a test, so the gauge reports an empty one.
+    expect(res.body).toMatchObject({
       committed: 0,
       duplicate: 0,
       ignored: 0,
       invalid: 0,
       dlq: 0,
+      lag: {},
+      totalLag: 0,
+      lastCommit: null,
+      sampledAt: null,
     });
     expect(res.headers['cache-control']).toBe('no-store');
   });

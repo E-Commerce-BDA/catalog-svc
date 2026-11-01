@@ -1,79 +1,54 @@
 import { Injectable } from '@nestjs/common';
-import type { OrderCreatedOutcome } from './order-created/order-created.handler.js';
+import {
+  ConsumerMetrics as SharedConsumerMetrics,
+  type ConsumerCommitMark,
+  type ConsumerCounters,
+  type LagSample,
+} from '@ecom/messaging';
 
 /**
- * Per-outcome counters for the consumer. Process-local and reset on boot, which
- * is the cheapest thing that can answer "how many events did we drop in the
- * last hour" without a metrics sidecar.
+ * The counters themselves live in `@ecom/messaging`, so all three services
+ * report the same nine names.
  *
- * `invalid` covers messages that can never be understood (envelope/payload
- * drift); an event that is well-formed but finds a closed reservation is
- * counted only as `dlq`, because the DLQ record carries the reason.
+ * What stays here is the Nest provider and the shape of the endpoint. Catalog
+ * used to keep its own five-counter class (`committed`, `duplicate`, `ignored`,
+ * `invalid`, `dlq`); those five are still reported, unchanged, and `accepted`,
+ * `skipped`, `commit` and `stalled` are additive — which is why a dashboard
+ * written against `cat-007` keeps working.
+ *
+ * Subclassing rather than aliasing keeps `ConsumerMetrics` injectable and keeps
+ * every existing constructor signature (the e2e spec's `metrics.reset()`)
+ * unchanged.
  */
-export type ConsumerOutcome =
-  | 'committed'
-  | 'duplicate'
-  | 'ignored'
-  | 'invalid'
-  | 'dlq';
-
-export type ConsumerStatsSnapshot = Record<ConsumerOutcome, number>;
-
-const OUTCOMES: readonly ConsumerOutcome[] = [
-  'committed',
-  'duplicate',
-  'ignored',
-  'invalid',
-  'dlq',
-];
-
 @Injectable()
-export class ConsumerMetrics {
-  private readonly counts: ConsumerStatsSnapshot = {
-    committed: 0,
-    duplicate: 0,
-    ignored: 0,
-    invalid: 0,
-    dlq: 0,
-  };
+export class ConsumerMetrics extends SharedConsumerMetrics {}
 
-  record(outcome: ConsumerOutcome): void {
-    this.counts[outcome] += 1;
-  }
-
-  snapshot(): ConsumerStatsSnapshot {
-    return { ...this.counts };
-  }
-
-  reset(): void {
-    for (const outcome of OUTCOMES) {
-      this.counts[outcome] = 0;
-    }
-  }
+/**
+ * What `GET /api/v1/catalog/internal/consumer-stats` answers.
+ *
+ * Counters first, then the position and the lag next to each other: a lag
+ * without a last commit cannot distinguish "behind" from "stopped", which is
+ * the one question this endpoint exists to answer.
+ */
+export interface ConsumerStatsSnapshot extends ConsumerCounters {
+  /** Uncommitted records per topic, from the last background sample. */
+  lag: Record<string, number>;
+  totalLag: number;
+  lastCommit: ConsumerCommitMark | null;
+  /** `null` until the first sample; the gauge is not the consumer's health. */
+  sampledAt: string | null;
 }
 
-/**
- * Folds one handled outcome into the counters.
- *
- * `dlq` is deliberately *not* recorded here: it counts DLQ writes that actually
- * succeeded, and only the Kafka consumer can know that.
- */
-export function recordOutcome(
+/** Composes the endpoint's payload from the counters and the last lag sample. */
+export function buildConsumerStats(
   metrics: ConsumerMetrics,
-  outcome: OrderCreatedOutcome,
-): void {
-  switch (outcome.kind) {
-    case 'committed':
-      metrics.record('committed');
-      break;
-    case 'duplicate':
-      metrics.record('duplicate');
-      break;
-    case 'ignored':
-      metrics.record('ignored');
-      break;
-    case 'invalid':
-      metrics.record('invalid');
-      break;
-  }
+  sample: LagSample | null,
+): ConsumerStatsSnapshot {
+  return {
+    ...metrics.snapshot(),
+    lag: sample?.lag ?? {},
+    totalLag: sample?.totalLag ?? 0,
+    lastCommit: metrics.lastCommit(),
+    sampledAt: sample?.sampledAt ?? null,
+  };
 }
