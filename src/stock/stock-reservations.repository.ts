@@ -14,6 +14,7 @@ import {
   isTerminal,
   type ExpiredReservation,
   type ReleasedItemResult,
+  type ReleaseOutcome,
   type ReservedItemResult,
   type ReservationStatus,
   type StockCommitOutcome,
@@ -24,7 +25,8 @@ import {
   type StockReservationView,
 } from './stock.types.js';
 
-interface ReservationRow {
+/** One reservation as stored. Exported for the consumers that lock it. */
+export interface ReservationRow {
   id: string;
   order_id: string | null;
   status: ReservationStatus;
@@ -135,53 +137,106 @@ export class StockReservationsRepository {
    * Restores the stored items once. Replaying a release (or releasing an
    * already expired hold) is a no-op, but a committed hold can no longer be
    * released — its stock was legitimately sold.
+   *
+   * The throwing half of the pair: `POST /internal/stock/release` maps these
+   * onto 404 and 409, which order-svc's compensation already relies on, so that
+   * contract does not change when the consumer gains its own entry point.
    */
   async release(reservationId: string): Promise<StockReleaseResult> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    const outcome = await this.withTransaction((client) =>
+      this.releaseInTransaction(client, reservationId),
+    );
 
-      const existing = await this.findForUpdate(client, reservationId);
-      if (!existing) {
-        throw new NotFoundException(`Reservation ${reservationId} not found`);
-      }
-      if (existing.status === 'committed') {
-        throw new ConflictException({
-          code: 'RESERVATION_CLOSED',
-          message: `Reservation ${reservationId} is already committed`,
-        });
-      }
-      if (existing.status !== 'held') {
-        await client.query('COMMIT');
-        return { reservationId, status: existing.status, items: [] };
-      }
-
-      const releasedItems: ReleasedItemResult[] = [];
-      for (const item of this.sortItems(existing.items ?? [])) {
-        const restored = await this.restore(
-          client,
-          item,
-          reservationId,
-          existing.order_id,
-        );
-        if (restored) releasedItems.push(restored);
-      }
-
-      await client.query(
-        `UPDATE catalog.stock_reservations
-            SET status = 'released', updated_at = now()
-          WHERE id = $1`,
-        [reservationId],
-      );
-      await client.query('COMMIT');
-
-      return { reservationId, status: 'released', items: releasedItems };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw this.mapPostgresError(err);
-    } finally {
-      client.release();
+    if (!outcome) {
+      throw new NotFoundException(`Reservation ${reservationId} not found`);
     }
+    if (outcome.kind === 'not-releasable') {
+      throw new ConflictException({
+        code: 'RESERVATION_CLOSED',
+        message: `Reservation ${reservationId} is already committed`,
+      });
+    }
+    if (outcome.kind === 'already-released') {
+      return { reservationId, status: outcome.status, items: [] };
+    }
+
+    return {
+      reservationId: outcome.reservationId,
+      status: 'released',
+      items: outcome.items,
+    };
+  }
+
+  /**
+   * The body of a release, inside a caller-owned transaction.
+   *
+   * `null` means "no such reservation": the HTTP route turns that into a 404,
+   * and the consumer reads it as "this order never held stock". Everything else
+   * is reported rather than thrown, because a consumer must be able to tell the
+   * delivery that restored stock from a redelivery of the same cancellation —
+   * and must be able to log a committed hold instead of dead-lettering it.
+   */
+  async releaseInTransaction(
+    client: PoolClient,
+    reservationId: string,
+  ): Promise<ReleaseOutcome | null> {
+    const existing = await this.findForUpdate(client, reservationId);
+    if (!existing) return null;
+
+    if (existing.status === 'committed') {
+      return { kind: 'not-releasable', reservationId, status: 'committed' };
+    }
+    if (existing.status !== 'held') {
+      return {
+        kind: 'already-released',
+        reservationId,
+        status: existing.status,
+      };
+    }
+
+    const releasedItems: ReleasedItemResult[] = [];
+    for (const item of this.sortItems(existing.items ?? [])) {
+      const restored = await this.restore(
+        client,
+        item,
+        reservationId,
+        existing.order_id,
+      );
+      if (restored) releasedItems.push(restored);
+    }
+
+    await client.query(
+      `UPDATE catalog.stock_reservations
+          SET status = 'released', updated_at = now()
+        WHERE id = $1`,
+      [reservationId],
+    );
+
+    return { kind: 'released', reservationId, items: releasedItems };
+  }
+
+  /**
+   * The reservation an order owns, locked for update.
+   *
+   * `idx_stock_reservations_order` is partial and unique, so at most one row can
+   * carry a given order id: no ordering clause is needed and a second row cannot
+   * be silently picked. Checkout sets the column while the hold is still `held`
+   * — it generates the order id before calling reserve — which is what makes
+   * this usable from a status event, where the order exists but its hold may not
+   * have been committed yet.
+   */
+  async findByOrderIdForUpdate(
+    client: PoolClient,
+    orderId: string,
+  ): Promise<ReservationRow | null> {
+    const res = await client.query<ReservationRow>(
+      `SELECT ${RESERVATION_COLUMNS}
+         FROM catalog.stock_reservations
+        WHERE order_id = $1
+        FOR UPDATE`,
+      [orderId],
+    );
+    return res.rows[0] ?? null;
   }
 
   /**

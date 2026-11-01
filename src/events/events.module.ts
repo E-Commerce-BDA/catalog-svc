@@ -18,6 +18,7 @@ import {
 } from './consumer-runtime.js';
 import { ConsumerStatsController } from './consumer-stats.controller.js';
 import { OrderCreatedHandler } from './order-created/order-created.handler.js';
+import { OrderStatusUpdatedHandler } from './order-status-updated/order-status-updated.handler.js';
 import { ProductImportRejectedError } from './product-imported/import.errors.js';
 import { ProductImportRepository } from './product-imported/product-import.repository.js';
 import { ProductImportedHandler } from './product-imported/product-imported.handler.js';
@@ -27,8 +28,9 @@ import { ProductImportedHandler } from './product-imported/product-imported.hand
  *
  * Publishing moved to `CatalogOutbox` (`cat-007`): every outgoing event is a row
  * in `catalog.outbox` that the relay drains. What is left here only *reads* from
- * Kafka — `order.created` drives stock reservations, `product.imported` writes
- * the catalogue — so there is no producer path in this module.
+ * Kafka — `order.created` drives stock reservations, `order.status.updated`
+ * releases them, `product.imported` writes the catalogue — so there is no
+ * producer path in this module.
  *
  * Every provider is constructed lazily by the package — no connection is opened
  * until the consumer actually starts or a record has to be dead-lettered — so
@@ -44,6 +46,7 @@ import { ProductImportedHandler } from './product-imported/product-imported.hand
     ConsumerMetrics,
     ProductImportRepository,
     OrderCreatedHandler,
+    OrderStatusUpdatedHandler,
     ProductImportedHandler,
     {
       provide: KafkaDlqPublisher,

@@ -7,7 +7,6 @@ import { AppModule } from './../src/app.module.js';
 import { closePool, getPool } from './../src/db/pool.js';
 import { ConsumerMetrics } from './../src/events/consumer-metrics.js';
 import { OrderCreatedHandler } from './../src/events/order-created/order-created.handler.js';
-import { ReservationClosedError } from './../src/stock/stock-reservations.errors.js';
 import { StockReservationsRepository } from './../src/stock/stock-reservations.repository.js';
 
 if (!process.env.DATABASE_URL && typeof process.loadEnvFile === 'function') {
@@ -198,25 +197,29 @@ describe('order.created consumer (e2e)', () => {
     expect(await stockOf(productId)).toBe(2);
   });
 
-  it('refuses a released hold and leaves the event unclaimed', async () => {
+  it('concedes a hold that a cancellation already released', async () => {
     const productId = await createProduct(3);
     const reservationId = await hold(productId, 1);
+    const orderId = randomUUID();
     await reservations.release(reservationId);
-    const event = orderCreatedEvent(reservationId, randomUUID());
+    const event = orderCreatedEvent(reservationId, orderId);
 
-    await expect(handler.handle(event)).rejects.toBeInstanceOf(
-      ReservationClosedError,
-    );
+    // Both topics carry the same intent and Kafka orders them only within one
+    // partition, so a fast cancellation legitimately wins. It restored the stock
+    // already; the commit must not dead-letter, and must not restore it twice.
+    await expect(handler.handle(event)).resolves.toEqual({
+      kind: 'ignored',
+      reason: 'released-by-cancellation',
+    });
 
-    // The claim and the commit share one transaction, so a terminal outcome
-    // must not record the event as processed: the DLQ is the only record.
+    // The claim commits with the concession, so the redelivery is a duplicate
+    // rather than a second attempt at a hold that can never come back.
     const { rows } = await getPool().query<{ count: number }>(
       `SELECT count(*)::int AS count FROM catalog.processed_events
         WHERE event_id = $1`,
       [(event as { id: string }).id],
     );
-    expect(rows[0].count).toBe(0);
-    // The release already restored the unit.
+    expect(rows[0].count).toBe(1);
     expect(await stockOf(productId)).toBe(3);
   });
 

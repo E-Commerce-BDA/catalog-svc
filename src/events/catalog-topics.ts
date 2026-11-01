@@ -5,7 +5,7 @@ import type { EventTopic } from '@ecom/contracts';
  *
  * One list feeds three things that must never disagree: the controller's
  * `@EventPattern` strings, the lag sampler's topic set, and the DLQ names (which
- * come from the registry for a registered topic). `cat-010` adds
+ * come from the registry for a registered topic). `cat-010` added
  * `order.status.updated` here plus one method on the controller — never a
  * second consumer, because two consumers in one group split the partitions
  * between them.
@@ -13,6 +13,7 @@ import type { EventTopic } from '@ecom/contracts';
 export const CATALOG_CONSUMER_TOPICS = [
   'order.created',
   'product.imported',
+  'order.status.updated',
 ] as const satisfies readonly EventTopic[];
 
 export type CatalogTopic = (typeof CATALOG_CONSUMER_TOPICS)[number];

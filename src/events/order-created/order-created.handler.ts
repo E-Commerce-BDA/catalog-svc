@@ -4,10 +4,13 @@ import {
   readEventEnvelope,
   type OrderCreatedPayload,
 } from '@ecom/contracts';
+import type { PoolClient } from 'pg';
 import { ZodError } from 'zod';
+import { ReservationClosedError } from '../../stock/stock-reservations.errors.js';
 import { StockReservationsRepository } from '../../stock/stock-reservations.repository.js';
+import type { StockCommitOutcome } from '../../stock/stock.types.js';
 
-/** The only event this handler interprets; `cat-010` adds `order.status.updated`. */
+/** The event this handler interprets; `order.status.updated` is the other. */
 const ORDER_CREATED = 'order.created';
 
 /** Longest error summary kept on a DLQ record; a Zod error can be huge. */
@@ -21,7 +24,8 @@ const MAX_ISSUES = 3;
  *
  * A closed / mismatched / missing reservation is *not* represented here: those
  * are thrown so the transaction rolls the `processed_events` claim back and the
- * consumer can classify them as terminal.
+ * consumer can classify them as terminal. The one exception is a hold that a
+ * cancellation already released — see `released-by-cancellation` below.
  */
 export type OrderCreatedOutcome =
   | {
@@ -35,7 +39,7 @@ export type OrderCreatedOutcome =
   | { kind: 'duplicate'; eventId: string }
   | {
       kind: 'ignored';
-      reason: 'not-subscribed' | 'no-reservation';
+      reason: 'not-subscribed' | 'no-reservation' | 'released-by-cancellation';
       type?: string;
     }
   | { kind: 'invalid'; stage: 'envelope' | 'payload'; error: string };
@@ -101,11 +105,16 @@ export class OrderCreatedHandler {
         return { kind: 'duplicate', eventId };
       }
 
-      const committed = await this.reservations.commitInTransaction(
+      const committed = await this.commitOrConcede(
         client,
         reservationId,
         payload.orderId,
+        eventId,
       );
+
+      if (!committed) {
+        return { kind: 'ignored', reason: 'released-by-cancellation' };
+      }
 
       return {
         kind: 'committed',
@@ -115,6 +124,46 @@ export class OrderCreatedHandler {
         outcome: committed.outcome,
       };
     });
+  }
+
+  /**
+   * Commits the hold, or reports that a cancellation got there first.
+   *
+   * `order.created` and `order.status.updated` are separate topics, so Kafka
+   * gives no ordering guarantee between them: a failed payment can publish its
+   * cancellation and have it consumed before the `order.created` it cancels. The
+   * cancellation is allowed to win — it has already put the stock back — so
+   * dead-lettering the commit would only describe a correct outcome as an error,
+   * once per fast cancel.
+   *
+   * `expired` is deliberately *not* conceded: it means the hold timed out and
+   * the stock was sold to someone else, which the order must be told about. A
+   * `ReservationMismatchError` is likewise still terminal.
+   */
+  private async commitOrConcede(
+    client: PoolClient,
+    reservationId: string,
+    orderId: string,
+    eventId: string,
+  ): Promise<StockCommitOutcome | null> {
+    try {
+      return await this.reservations.commitInTransaction(
+        client,
+        reservationId,
+        orderId,
+      );
+    } catch (error) {
+      if (
+        error instanceof ReservationClosedError &&
+        error.reservationStatus === 'released'
+      ) {
+        this.logger.warn(
+          `Reservation ${reservationId} for order ${orderId} was released by a cancellation before commit; event ${eventId} is a no-op`,
+        );
+        return null;
+      }
+      throw error;
+    }
   }
 }
 

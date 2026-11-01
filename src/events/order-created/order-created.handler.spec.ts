@@ -161,9 +161,27 @@ describe('OrderCreatedHandler', () => {
     expect(reservations.withTransaction).not.toHaveBeenCalled();
   });
 
-  it('throws when the hold was already released so the claim rolls back', async () => {
+  it('concedes to a cancellation that released the hold first', async () => {
+    // `order.created` and `order.status.updated` are different topics, so the
+    // cancellation may be consumed first. It has already restored the stock, so
+    // this is the correct outcome and must not become a dead letter.
     reservations.commitInTransaction.mockRejectedValue(
       new ReservationClosedError(RESERVATION_ID, 'released'),
+    );
+
+    const outcome = await handler.handle(envelope());
+
+    expect(outcome).toEqual({
+      kind: 'ignored',
+      reason: 'released-by-cancellation',
+    });
+  });
+
+  it('still dead-letters an expired hold', async () => {
+    // An expiry means the hold timed out and the stock was sold to someone else:
+    // conceding to that would silently leave an order without its stock.
+    reservations.commitInTransaction.mockRejectedValue(
+      new ReservationClosedError(RESERVATION_ID, 'expired'),
     );
 
     await expect(handler.handle(envelope())).rejects.toBeInstanceOf(

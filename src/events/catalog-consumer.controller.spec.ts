@@ -16,9 +16,11 @@ import {
   ReservationMismatchError,
 } from '../stock/stock-reservations.errors.js';
 import { CatalogConsumerController } from './catalog-consumer.controller.js';
+import { CATALOG_CONSUMER_TOPICS } from './catalog-topics.js';
 import { dlqReason } from './events.module.js';
 import { ProductImportRejectedError } from './product-imported/import.errors.js';
 import type { OrderCreatedHandler } from './order-created/order-created.handler.js';
+import type { OrderStatusUpdatedHandler } from './order-status-updated/order-status-updated.handler.js';
 import type { ProductImportedHandler } from './product-imported/product-imported.handler.js';
 
 const EVENT_ID = '0190a8b0-0000-7000-8000-00000000e201';
@@ -61,6 +63,21 @@ const importEnvelope = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const statusEnvelope = (to = 'cancelled', overrides: Record<string, unknown> = {}) => ({
+  id: '0190a8b0-0000-7000-8000-00000000e203',
+  type: 'order.status.updated',
+  producer: 'order-svc',
+  timestamp: '2026-10-30T10:00:02.000Z',
+  payload: {
+    orderId: ORDER_ID,
+    orderNumber: 'ORD-20261030-0001',
+    from: 'pending',
+    to,
+    timestamp: '2026-10-30T10:00:02.000Z',
+  },
+  ...overrides,
+});
+
 /**
  * The protocol itself is tested in `@ecom/messaging`. What is asserted here is
  * that catalog-svc is wired to it correctly: two routes on one consumer, the
@@ -80,6 +97,7 @@ describe('CatalogConsumerController', () => {
   const order: string[] = [];
   let orders: { handle: ReturnType<typeof vi.fn> };
   let imports: { handle: ReturnType<typeof vi.fn> };
+  let statuses: { handle: ReturnType<typeof vi.fn> };
   let metrics: ConsumerMetrics;
   let producer: {
     connect: ReturnType<typeof vi.fn>;
@@ -133,6 +151,15 @@ describe('CatalogConsumerController', () => {
         stockFigures: 1,
       }),
     };
+    statuses = {
+      handle: vi.fn().mockResolvedValue({
+        kind: 'released',
+        reservationId: RESERVATION_ID,
+        orderId: ORDER_ID,
+        eventId: EVENT_ID,
+        outcome: 'released',
+      }),
+    };
     metrics = new ConsumerMetrics();
 
     commitOffsets = vi.fn().mockImplementation(() => {
@@ -172,6 +199,7 @@ describe('CatalogConsumerController', () => {
       handler,
       orders as unknown as OrderCreatedHandler,
       imports as unknown as ProductImportedHandler,
+      statuses as unknown as OrderStatusUpdatedHandler,
     );
   });
 
@@ -441,5 +469,82 @@ describe('CatalogConsumerController', () => {
     expect(commitOffsets).not.toHaveBeenCalled();
     // The counter follows the write, so a failed write is not counted as DLQed.
     expect(metrics.snapshot()).toMatchObject({ invalid: 0, dlq: 0 });
+  });
+
+  it('declares every topic the controller routes and the sampler measures', () => {
+    // One list feeds the `@EventPattern` strings, the lag sampler and the DLQ
+    // names; a topic added to one and not the others is invisible until a
+    // cancellation is silently never consumed.
+    expect(CATALOG_CONSUMER_TOPICS).toEqual([
+      'order.created',
+      'product.imported',
+      'order.status.updated',
+    ]);
+  });
+
+  it('releases the reservation on a cancellation and counts it as accepted', async () => {
+    await controller.onOrderStatusUpdated(
+      JSON.stringify(statusEnvelope('cancelled')),
+      context('60', 1),
+    );
+
+    expect(statuses.handle).toHaveBeenCalledWith(statusEnvelope('cancelled'));
+    expect(commitOffsets).toHaveBeenCalledWith([
+      { topic: 'order.status.updated', partition: 1, offset: '61' },
+    ]);
+    expect(producer.send).not.toHaveBeenCalled();
+    // `accepted`, not a bespoke name: `AppliedCounter` is a closed union in
+    // @ecom/messaging, so a release reports under the protocol's default.
+    expect(metrics.snapshot()).toMatchObject({ accepted: 1, dlq: 0 });
+  });
+
+  it('dead-letters an invalid status payload to its own topic DLQ', async () => {
+    statuses.handle.mockResolvedValue({
+      kind: 'invalid',
+      stage: 'payload',
+      error: 'to: Invalid enum value',
+    });
+
+    await controller.onOrderStatusUpdated(
+      JSON.stringify(statusEnvelope('shipped')),
+      context('20', 2),
+    );
+
+    // The explicit topic string is what names the DLQ, so this case fails if the
+    // `@EventPattern` and the topic passed to `run` ever disagree.
+    expect(sentTopic()).toBe('order.status.updated.dlq');
+    expect(sentRecord().reason).toBe('invalid-payload');
+    expect(commitOffsets).toHaveBeenCalledWith([
+      { topic: 'order.status.updated', partition: 2, offset: '21' },
+    ]);
+  });
+
+  it('commits a status event that is not a release without a DLQ write', async () => {
+    statuses.handle.mockResolvedValue({
+      kind: 'ignored',
+      reason: 'not-release-status',
+      status: 'shipped',
+    });
+
+    await controller.onOrderStatusUpdated(
+      JSON.stringify(statusEnvelope('shipped')),
+      context('90'),
+    );
+
+    expect(producer.send).not.toHaveBeenCalled();
+    expect(commitOffsets).toHaveBeenCalledTimes(1);
+    expect(metrics.snapshot()).toMatchObject({ ignored: 1, dlq: 0 });
+  });
+
+  it('does not dead-letter a duplicate cancellation', async () => {
+    statuses.handle.mockResolvedValue({ kind: 'duplicate', eventId: EVENT_ID });
+
+    await controller.onOrderStatusUpdated(
+      JSON.stringify(statusEnvelope()),
+      context('91'),
+    );
+
+    expect(producer.send).not.toHaveBeenCalled();
+    expect(metrics.snapshot()).toMatchObject({ duplicate: 1, dlq: 0 });
   });
 });

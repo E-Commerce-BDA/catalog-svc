@@ -10,9 +10,11 @@ import type { KafkaHandlerOutcome } from '@ecom/messaging';
 import type { CatalogTopic } from './catalog-topics.js';
 import {
   toOrderCreatedOutcome,
+  toOrderStatusUpdatedOutcome,
   toProductImportedOutcome,
 } from './handler-outcome.js';
 import { OrderCreatedHandler } from './order-created/order-created.handler.js';
+import { OrderStatusUpdatedHandler } from './order-status-updated/order-status-updated.handler.js';
 import { ProductImportedHandler } from './product-imported/product-imported.handler.js';
 
 /**
@@ -24,7 +26,7 @@ import { ProductImportedHandler } from './product-imported/product-imported.hand
  * `CATALOG_CONSUMER_TOPICS` — never a second consumer group, because two
  * consumers in one group split the partitions between them.
  *
- * What lives here is only the topic list and the mapping to the two handlers.
+ * What lives here is only the topic list and the mapping to the three handlers.
  * Parsing, the retry ladder, the dead letters, the counters and the offset
  * commit all belong to `KafkaEventHandler`, which is shared with cart-svc and
  * search-svc and is the only place that protocol is written down. This replaces
@@ -49,6 +51,7 @@ export class CatalogConsumerController {
     private readonly events: KafkaEventHandler,
     private readonly orders: OrderCreatedHandler,
     private readonly imports: ProductImportedHandler,
+    private readonly statuses: OrderStatusUpdatedHandler,
   ) {}
 
   @EventPattern('order.created')
@@ -58,6 +61,16 @@ export class CatalogConsumerController {
   ): Promise<void> {
     await this.handle('order.created', raw, ctx, async (envelope) =>
       toOrderCreatedOutcome(await this.orders.handle(envelope)),
+    );
+  }
+
+  @EventPattern('order.status.updated')
+  async onOrderStatusUpdated(
+    @Payload() raw: string,
+    @Ctx() ctx: unknown,
+  ): Promise<void> {
+    await this.handle('order.status.updated', raw, ctx, async (envelope) =>
+      toOrderStatusUpdatedOutcome(await this.statuses.handle(envelope)),
     );
   }
 

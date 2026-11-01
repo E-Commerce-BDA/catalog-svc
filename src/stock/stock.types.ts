@@ -64,6 +64,26 @@ export interface StockReservationView extends StockReservationResult {
   createdAt: string;
 }
 
+/**
+ * What releasing a hold inside a caller-owned transaction turned out to be.
+ *
+ * `release()` keeps throwing for the two answers the HTTP route must report as
+ * status codes (missing, committed). The consumer cannot throw: a committed hold
+ * belonging to a cancelled order is a data anomaly worth a log line, not a dead
+ * letter, and "the hold expired on its own" is a correct outcome, not a failure.
+ * So the transaction body reports, and each caller maps.
+ */
+export type ReleaseOutcome =
+  | { kind: 'released'; reservationId: string; items: ReleasedItemResult[] }
+  /** The stock was already back on the shelf; nothing moved. */
+  | {
+      kind: 'already-released';
+      reservationId: string;
+      status: 'released' | 'expired';
+    }
+  /** The stock was sold. Releasing would restock an item that has shipped. */
+  | { kind: 'not-releasable'; reservationId: string; status: 'committed' };
+
 export interface ExpiredReservation {
   reservationId: string;
   releasedItems: ReleasedItemResult[];
