@@ -4,9 +4,17 @@
  * A reservation is a hold on stock created by order-svc during checkout. Stock
  * is decremented when the hold is taken (`held`) and restored exactly once when
  * the hold is released or expires; `committed` consumes the hold without moving
- * stock again. Terminal states are never re-entered.
+ * stock again. A `committed` hold whose order is then refunded is restocked once
+ * more and becomes `refunded` — a distinct terminal state, because the units came
+ * back after a sale rather than never having sold. Terminal states are never
+ * re-entered.
  */
-export type ReservationStatus = 'held' | 'committed' | 'released' | 'expired';
+export type ReservationStatus =
+  | 'held'
+  | 'committed'
+  | 'released'
+  | 'expired'
+  | 'refunded';
 
 export interface StockReservationItem {
   productId: string;
@@ -79,10 +87,33 @@ export type ReleaseOutcome =
   | {
       kind: 'already-released';
       reservationId: string;
-      status: 'released' | 'expired';
+      status: 'released' | 'expired' | 'refunded';
     }
   /** The stock was sold. Releasing would restock an item that has shipped. */
   | { kind: 'not-releasable'; reservationId: string; status: 'committed' };
+
+/**
+ * What restocking a committed hold inside a caller-owned transaction turned out
+ * to be (cat-012).
+ *
+ * The refund path is the mirror of the release path but is entered only for a
+ * `committed` hold, whose stock was already sold: the units come back with a
+ * dedicated `return` movement and the hold lands on `refunded`, never `released`.
+ * `already-restocked` is a redelivery of the same refund — the status guard makes
+ * it a no-op rather than a second restock. `not-refundable` is the anomaly the
+ * release path also refuses: a hold that is `held` (never sold), or already
+ * `released`/`expired`, has nothing to restock after a sale.
+ */
+export type RestockOutcome =
+  | { kind: 'restocked'; reservationId: string; items: ReleasedItemResult[] }
+  /** The refund was already restocked; nothing moved. */
+  | { kind: 'already-restocked'; reservationId: string }
+  /** This hold has no sold stock to bring back. */
+  | {
+      kind: 'not-refundable';
+      reservationId: string;
+      status: 'held' | 'released' | 'expired';
+    };
 
 export interface ExpiredReservation {
   reservationId: string;
@@ -90,9 +121,10 @@ export interface ExpiredReservation {
 }
 
 /**
- * Released or expired holds cannot be revived: the stock they referenced has
- * already been sold to someone else.
+ * Released, expired, or refunded holds cannot be revived: the stock they
+ * referenced has already been sold to someone else (or, for a refund, sold and
+ * then brought back), so the hold has served its whole life.
  */
 export function isTerminal(status: ReservationStatus): boolean {
-  return status === 'released' || status === 'expired';
+  return status === 'released' || status === 'expired' || status === 'refunded';
 }

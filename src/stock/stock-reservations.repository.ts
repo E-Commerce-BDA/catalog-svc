@@ -17,6 +17,7 @@ import {
   type ReleaseOutcome,
   type ReservedItemResult,
   type ReservationStatus,
+  type RestockOutcome,
   type StockCommitOutcome,
   type StockCommitResult,
   type StockReleaseResult,
@@ -213,6 +214,62 @@ export class StockReservationsRepository {
     );
 
     return { kind: 'released', reservationId, items: releasedItems };
+  }
+
+  /**
+   * Restocks a committed hold whose order was refunded (cat-012).
+   *
+   * This is the only path that moves stock for a hold that already sold: the
+   * refund means the units came back, so they are written with the dedicated
+   * `return` reason — never `cancel`, which would bury refund volume among
+   * pre-sale cancellations — and the hold lands on `refunded`, a terminal state
+   * distinct from `released` so the audit can tell a restock-after-sale apart
+   * from a cancellation. It mirrors `releaseInTransaction`'s report-don't-throw
+   * contract so the consumer can log the one anomaly rather than dead-letter.
+   *
+   * `null` means "no such reservation". A hold already on `refunded` reports
+   * `already-restocked`, so a replayed refund is a no-op; a hold in any other
+   * state is `not-refundable`, because only a committed (sold) hold has stock to
+   * bring back after the fact.
+   */
+  async restockRefundInTransaction(
+    client: PoolClient,
+    reservationId: string,
+  ): Promise<RestockOutcome | null> {
+    const existing = await this.findForUpdate(client, reservationId);
+    if (!existing) return null;
+
+    if (existing.status === 'refunded') {
+      return { kind: 'already-restocked', reservationId };
+    }
+    if (existing.status !== 'committed') {
+      return {
+        kind: 'not-refundable',
+        reservationId,
+        status: existing.status,
+      };
+    }
+
+    const restockedItems: ReleasedItemResult[] = [];
+    for (const item of this.sortItems(existing.items ?? [])) {
+      const restored = await this.restore(
+        client,
+        item,
+        reservationId,
+        existing.order_id,
+        'return',
+      );
+      if (restored) restockedItems.push(restored);
+    }
+
+    await client.query(
+      `UPDATE catalog.stock_reservations
+          SET status = 'refunded', updated_at = now()
+        WHERE id = $1`,
+      [reservationId],
+    );
+
+    return { kind: 'restocked', reservationId, items: restockedItems };
   }
 
   /**
@@ -499,6 +556,7 @@ export class StockReservationsRepository {
     item: StockReservationItem,
     reservationId: string,
     orderId: string | null,
+    reason: 'cancel' | 'return' = 'cancel',
   ): Promise<ReleasedItemResult | null> {
     // Soft-deleted products still get their stock back; a hard-deleted row is
     // unrecoverable, so the reservation closes without a movement instead of
@@ -519,7 +577,7 @@ export class StockReservationsRepository {
       client,
       item,
       item.quantity,
-      'cancel',
+      reason,
       restoredStock,
       orderId,
       reservationId,
@@ -586,7 +644,7 @@ export class StockReservationsRepository {
     client: PoolClient,
     item: StockReservationItem,
     qtyChange: number,
-    reason: 'sale' | 'cancel',
+    reason: 'sale' | 'cancel' | 'return',
     qtyAfter: number,
     orderId: string | null,
     reservationId: string,

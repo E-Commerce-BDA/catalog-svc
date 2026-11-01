@@ -254,15 +254,68 @@ describe('order.status.updated consumer (e2e)', () => {
     expect(await claimCount(event.id as string)).toBe(0);
   });
 
-  it('does not restock a refund whose hold was already committed', async () => {
+  it('restocks a refund whose hold was already committed, exactly once', async () => {
     const productId = await createProduct(7);
     const orderId = randomUUID();
     const reservationId = await hold(productId, 2, orderId);
 
     await orderCreated.handle(orderCreatedEvent(reservationId, orderId));
     expect(await reservationStatus(reservationId)).toBe('committed');
+    expect(await stockOf(productId)).toBe(5);
 
     const event = statusEvent(orderId, 'refunded');
+    await expect(handler.handle(event)).resolves.toMatchObject({
+      kind: 'restocked',
+      reservationId,
+      orderId,
+      outcome: 'restocked',
+    });
+
+    // The sold units come back to the pre-sale figure, recorded as a `return`
+    // movement and a `refunded` hold — not `cancel`/`released`, which would claim
+    // the units never sold.
+    expect(await stockOf(productId)).toBe(7);
+    expect(await reservationStatus(reservationId)).toBe('refunded');
+    expect(await movementReasons(reservationId)).toEqual(['return', 'sale']);
+    expect(await claimCount(event.id as string)).toBe(1);
+
+    // A redelivery of the same refund is a no-op: no second restock.
+    await expect(handler.handle(event)).resolves.toMatchObject({
+      kind: 'duplicate',
+    });
+    expect(await stockOf(productId)).toBe(7);
+    expect(await movementReasons(reservationId)).toEqual(['return', 'sale']);
+  });
+
+  it('restocks once when a fresh refund event repeats a settled refund', async () => {
+    const productId = await createProduct(6);
+    const orderId = randomUUID();
+    const reservationId = await hold(productId, 3, orderId);
+
+    await orderCreated.handle(orderCreatedEvent(reservationId, orderId));
+    await handler.handle(statusEvent(orderId, 'refunded'));
+
+    // A second refund carrying a NEW event id bypasses the processed-event claim,
+    // so it is the `refunded` hold status that keeps the units from doubling.
+    await expect(
+      handler.handle(statusEvent(orderId, 'refunded')),
+    ).resolves.toMatchObject({
+      kind: 'restocked',
+      outcome: 'already-restocked',
+    });
+
+    expect(await stockOf(productId)).toBe(6);
+    expect(await movementReasons(reservationId)).toEqual(['return', 'sale']);
+  });
+
+  it('does not restock a committed hold whose order was cancelled, not refunded', async () => {
+    const productId = await createProduct(7);
+    const orderId = randomUUID();
+    const reservationId = await hold(productId, 2, orderId);
+
+    await orderCreated.handle(orderCreatedEvent(reservationId, orderId));
+
+    const event = statusEvent(orderId, 'cancelled');
     await expect(handler.handle(event)).resolves.toEqual({
       kind: 'ignored',
       reason: 'not-releasable',
@@ -270,10 +323,11 @@ describe('order.status.updated consumer (e2e)', () => {
       orderId,
     });
 
-    // The unit was sold. Restocking it is cat-012's decision, not this path's.
+    // Only a refund restocks sold units; a cancellation of a shipped order would
+    // double-sell. The hold stays committed and the anomaly is logged once.
     expect(await stockOf(productId)).toBe(5);
+    expect(await reservationStatus(reservationId)).toBe('committed');
     expect(await movementReasons(reservationId)).toEqual(['sale']);
-    // Claimed anyway: this anomaly is logged once, never retried forever.
     expect(await claimCount(event.id as string)).toBe(1);
   });
 

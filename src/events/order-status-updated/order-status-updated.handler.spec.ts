@@ -24,7 +24,9 @@ const envelope = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const reservationRow = (status: 'held' | 'committed' | 'released' | 'expired') => ({
+const reservationRow = (
+  status: 'held' | 'committed' | 'released' | 'expired' | 'refunded',
+) => ({
   id: RESERVATION_ID,
   order_id: ORDER_ID,
   status,
@@ -46,6 +48,7 @@ describe('OrderStatusUpdatedHandler', () => {
     markProcessed: ReturnType<typeof vi.fn>;
     findByOrderIdForUpdate: ReturnType<typeof vi.fn>;
     releaseInTransaction: ReturnType<typeof vi.fn>;
+    restockRefundInTransaction: ReturnType<typeof vi.fn>;
   };
   let handler: OrderStatusUpdatedHandler;
 
@@ -60,6 +63,18 @@ describe('OrderStatusUpdatedHandler', () => {
         .mockResolvedValue(reservationRow('held')),
       releaseInTransaction: vi.fn().mockResolvedValue({
         kind: 'released',
+        reservationId: RESERVATION_ID,
+        items: [
+          {
+            productId: '0190a8b0-0000-7000-8000-00000000d001',
+            variantId: null,
+            quantity: 2,
+            restoredStock: 6,
+          },
+        ],
+      }),
+      restockRefundInTransaction: vi.fn().mockResolvedValue({
+        kind: 'restocked',
         reservationId: RESERVATION_ID,
         items: [
           {
@@ -159,7 +174,39 @@ describe('OrderStatusUpdatedHandler', () => {
     });
   });
 
-  it('does not restock a refunded order whose hold was already committed', async () => {
+  it('restocks a committed hold when its order is refunded (cat-012)', async () => {
+    reservations.findByOrderIdForUpdate.mockResolvedValue(
+      reservationRow('committed'),
+    );
+
+    const outcome = await handler.handle(
+      envelope({ payload: payload({ to: 'refunded' }) }),
+    );
+
+    expect(outcome).toEqual({
+      kind: 'restocked',
+      reservationId: RESERVATION_ID,
+      orderId: ORDER_ID,
+      eventId: EVENT_ID,
+      outcome: 'restocked',
+    });
+    // A committed hold has no releasable stock, so the release path is bypassed
+    // entirely and the refund-only restock runs instead.
+    expect(reservations.restockRefundInTransaction).toHaveBeenCalledWith(
+      { id: 'client-1' },
+      RESERVATION_ID,
+    );
+    expect(reservations.releaseInTransaction).not.toHaveBeenCalled();
+    // The claim and the restock share one transaction, so a redelivery is a
+    // no-op rather than a second restock.
+    expect(reservations.markProcessed).toHaveBeenCalledWith(
+      { id: 'client-1' },
+      EVENT_ID,
+      'order.status.updated',
+    );
+  });
+
+  it('still refuses to restock a committed hold whose order was cancelled', async () => {
     reservations.findByOrderIdForUpdate.mockResolvedValue(
       reservationRow('committed'),
     );
@@ -169,17 +216,39 @@ describe('OrderStatusUpdatedHandler', () => {
       status: 'committed',
     });
 
-    const outcome = await handler.handle(
-      envelope({ payload: payload({ to: 'refunded' }) }),
-    );
+    const outcome = await handler.handle(envelope());
 
-    // The stock was sold and shipped. Restocking it is cat-012, not this path,
-    // so the record is committed with a warning instead of dead-lettered.
+    // Only a refund brings sold units back. A cancellation of a hold that
+    // shipped would double-sell, so it stays the logged anomaly, not a restock.
     expect(outcome).toEqual({
       kind: 'ignored',
       reason: 'not-releasable',
       status: 'committed',
       orderId: ORDER_ID,
+    });
+    expect(reservations.restockRefundInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('reports a refund on an already-restocked hold as a no-op', async () => {
+    reservations.findByOrderIdForUpdate.mockResolvedValue(
+      reservationRow('refunded'),
+    );
+    reservations.restockRefundInTransaction.mockResolvedValue({
+      kind: 'already-restocked',
+      reservationId: RESERVATION_ID,
+    });
+
+    const outcome = await handler.handle(
+      envelope({
+        id: '0190a8b0-0000-7000-8000-00000000e205',
+        payload: payload({ to: 'refunded' }),
+      }),
+    );
+
+    // A second refund event (new id) for the same sold hold moves nothing.
+    expect(outcome).toMatchObject({
+      kind: 'restocked',
+      outcome: 'already-restocked',
     });
   });
 

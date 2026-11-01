@@ -71,15 +71,30 @@ export function toOrderStatusUpdatedOutcome(
         );
       }
       return { kind: 'applied' };
+    case 'restocked':
+      // cat-012: the same transport answer as a release — the record was applied
+      // — but a distinct log line, because a restock returns stock that had
+      // already been sold and names the reservation whose refund moved it.
+      if (outcome.outcome === 'already-restocked') {
+        releaseLogger.debug(
+          `Reservation ${outcome.reservationId} for order ${outcome.orderId} was already restocked for its refund; event ${outcome.eventId} is a no-op`,
+        );
+      } else {
+        releaseLogger.log(
+          `Restocked reservation ${outcome.reservationId} for refunded order ${outcome.orderId} (event ${outcome.eventId})`,
+        );
+      }
+      return { kind: 'applied' };
     case 'duplicate':
       return { kind: 'duplicate', eventId: outcome.eventId };
     case 'ignored':
       if (outcome.reason === 'not-releasable') {
-        // Committed stock has been sold. Restocking it after a post-delivery
-        // refund is a different decision with its own movement reason, so this
-        // is one warning line, not a dead letter and not a silent no-op.
+        // Committed stock has been sold. A refund restocks it (the `restocked`
+        // branch above), but a cancellation or failure of a hold that already
+        // shipped is not restocked — that would double-sell the unit. So this is
+        // one warning line, not a dead letter and not a silent no-op.
         releaseLogger.warn(
-          `Order ${outcome.orderId} was cancelled but its reservation is ${outcome.status}: the stock was sold and is not restored (cat-012)`,
+          `Order ${outcome.orderId} reached a release status but its reservation is ${outcome.status}: the stock was sold and is not restored`,
         );
       }
       return { kind: 'ignored', reason: outcome.reason, type: outcome.type };

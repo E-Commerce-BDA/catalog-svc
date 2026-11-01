@@ -40,6 +40,15 @@ export type OrderStatusUpdatedOutcome =
       /** Distinguishes "this event restored stock" from a redelivery. */
       outcome: 'released' | 'already-released';
     }
+  | {
+      /** cat-012: a refund brought back stock that had already been sold. */
+      kind: 'restocked';
+      reservationId: string;
+      orderId: string;
+      eventId: string;
+      /** Distinguishes "this event restocked" from a redelivery. */
+      outcome: 'restocked' | 'already-restocked';
+    }
   | { kind: 'duplicate'; eventId: string }
   | {
       kind: 'ignored';
@@ -129,6 +138,44 @@ export class OrderStatusUpdatedHandler {
           `Order ${payload.orderId} became ${payload.to} with no stock reservation; nothing to release`,
         );
         return { kind: 'ignored', reason: 'no-reservation' };
+      }
+
+      // cat-012: a refund whose hold had already committed sold the units and
+      // then got them back. This is the only case a committed hold restocks, and
+      // it is keyed on the refund status alone — a committed hold whose order was
+      // merely cancelled or failed is the anomaly the release path reports below,
+      // never a restock. A hold already on `refunded` is routed here too, so a
+      // redelivered refund is reported as a no-op restock rather than a release.
+      if (
+        payload.to === 'refunded' &&
+        (reservation.status === 'committed' ||
+          reservation.status === 'refunded')
+      ) {
+        const restocked = await this.reservations.restockRefundInTransaction(
+          client,
+          reservation.id,
+        );
+        if (!restocked) {
+          return { kind: 'ignored', reason: 'no-reservation' };
+        }
+        if (restocked.kind === 'not-refundable') {
+          // Unreachable: the row was locked as committed/refunded just above, so
+          // the re-read under that same lock cannot have left those states.
+          // Report the anomaly shape rather than throw, keeping the claim.
+          return {
+            kind: 'ignored',
+            reason: 'not-releasable',
+            status: restocked.status,
+            orderId: payload.orderId,
+          };
+        }
+        return {
+          kind: 'restocked',
+          reservationId: reservation.id,
+          orderId: payload.orderId,
+          eventId,
+          outcome: restocked.kind,
+        };
       }
 
       const released = await this.reservations.releaseInTransaction(
