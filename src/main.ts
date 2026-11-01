@@ -2,9 +2,14 @@ import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module.js';
 import { ValidationPipe } from '@nestjs/common';
+import { assertFixtureSeedAllowed } from './config/fixture-seed.guard.js';
 import { startEventConsumer } from './events/consumer-runtime.js';
 
 async function bootstrap() {
+  // Before the app is built: a misconfigured production box must not open a
+  // database connection at all.
+  assertFixtureSeedAllowed();
+
   const app = await NestFactory.create(AppModule);
   const port = process.env.PORT ?? 4020;
   const config = app.get(ConfigService);

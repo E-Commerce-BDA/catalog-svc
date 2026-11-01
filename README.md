@@ -37,11 +37,11 @@ The service listens on `http://127.0.0.1:4020` and mounts everything under
 
 ### Database Schema & Seed Setup (Manual)
 
-Apply in order — later files assume the earlier ones exist:
+Apply in order — later files assume the earlier ones exist. `002` is **not** in
+this list: it is a fixture, not a migration (see below).
 
 ```bash
 psql -h localhost -p 5433 -U ecom -d ecom -f db/001-catalog-schema.sql
-psql -h localhost -p 5433 -U ecom -d ecom -f db/002-seed-catalog.sql
 psql -h localhost -p 5433 -U ecom -d ecom -f db/003-stock-reservations.sql
 psql -h localhost -p 5433 -U ecom -d ecom -f db/004-badges-and-card-settings.sql
 psql -h localhost -p 5433 -U ecom -d ecom -f db/005-product-option-card-placement.sql
@@ -52,7 +52,26 @@ psql -h localhost -p 5433 -U ecom -d ecom -f db/006-order-created-consumer.sql
 every `order.created` event fails with
 `relation "catalog.processed_events" does not exist` and lands in the DLQ.
 
-On PowerShell 5.1 there is no `<` redirection, so pipe the file instead:
+#### Fixture catalogue (development only)
+
+`db/002-seed-catalog.sql` writes demo products (a tee, a mug). It is applied by a
+guarded script rather than by hand, and it is never part of a deployment:
+
+```bash
+$env:CATALOG_ALLOW_FIXTURE_SEED = 'true'   # bash: CATALOG_ALLOW_FIXTURE_SEED=true \
+pnpm db:seed
+```
+
+The script exits non-zero with a one-line reason unless
+`CATALOG_ALLOW_FIXTURE_SEED=true` **and** `NODE_ENV` is not `production`, and it
+prints the row count of every table it touches. `main.ts` re-checks the same flag
+at boot, so a production process configured with it fails before it opens a
+database connection.
+
+**Production data arrives through the admin CRUD routes and through
+`product.imported`.** The fixture seed is not a data-loading path.
+
+On PowerShell 5.1 there is no `<` redirection, so pipe a migration file instead:
 
 ```powershell
 Get-Content db\006-order-created-consumer.sql -Raw | docker exec -i ecom-pg psql -U ecom -d ecom -f -
@@ -139,6 +158,7 @@ still only logs, so nothing publishes `order.created` in a real deployment yet.
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated |
 | `KAFKA_CONSUMER_ENABLED` | `true` | `false` keeps the API up without the consumer; holds then wait for the sweep or an operator |
 | `STOCK_RESERVATION_TTL_SECONDS` | `900` | Hold lifetime before the sweep releases it |
+| `CATALOG_ALLOW_FIXTURE_SEED` | `false` | Only `pnpm db:seed` reads it. Never `true` in production: the service refuses to boot |
 
 ## Health Probes
 

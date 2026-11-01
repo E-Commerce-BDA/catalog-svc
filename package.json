@@ -16,7 +16,8 @@
     "lint": "oxlint --type-aware src/ test/",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "db:seed": "node db/seed.mjs"
   },
   "dependencies": {
     "@ecom/contracts": "file:..\\ecom-contracts\\ecom-contracts-1.9.0.tgz",
