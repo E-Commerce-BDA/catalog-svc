@@ -869,6 +869,29 @@ export class ProductsRepository {
     };
   }
 
+  async setVariantOptions(
+    variantId: string,
+    options: { optionId: string; optionValueId: string }[],
+    client?: QueryHandle,
+  ): Promise<void> {
+    const run = async (q: QueryHandle) => {
+      await q.query(
+        'DELETE FROM catalog.product_variant_option_values WHERE variant_id = $1',
+        [variantId],
+      );
+      for (const opt of options) {
+        await q.query(
+          `INSERT INTO catalog.product_variant_option_values (variant_id, option_id, option_value_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (variant_id, option_id) DO UPDATE
+           SET option_value_id = EXCLUDED.option_value_id;`,
+          [variantId, opt.optionId, opt.optionValueId],
+        );
+      }
+    };
+    return client ? run(client) : withTransaction(run);
+  }
+
   async findVariantById(
     id: string,
     client?: QueryHandle,

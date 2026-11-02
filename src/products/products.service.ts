@@ -227,6 +227,23 @@ export class ProductsService {
     });
   }
 
+  async setVariantOptions(
+    id: string,
+    options: { optionId: string; optionValueId: string }[],
+  ): Promise<ProductVariant> {
+    const variant = await this.repository.findVariantById(id);
+    if (!variant) {
+      throw new NotFoundException(`Variant with id '${id}' not found`);
+    }
+
+    return withTransaction(async (client) => {
+      await this.repository.setVariantOptions(id, options, client);
+      await this.recordProductUpdated(client, variant.productId);
+      const updated = await this.repository.findVariantById(id, client);
+      return updated!;
+    });
+  }
+
   async deleteVariant(id: string): Promise<void> {
     await withTransaction(async (client) => {
       const productId = await this.repository.deleteVariant(id, client);

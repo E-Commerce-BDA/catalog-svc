@@ -12,6 +12,7 @@ import { Roles } from '../auth/decorators/roles.decorator.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { UpdateVariantDto } from './dto/update-variant.dto.js';
+import { SetVariantOptionsDto } from './dto/set-variant-options.dto.js';
 import { ProductsService } from './products.service.js';
 import { ProductVariant } from './products.types.js';
 
@@ -30,10 +31,20 @@ export class VariantsController {
     return { variant };
   }
 
+  @Patch(':id/options')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  async setVariantOptions(
+    @Param('id') id: string,
+    @Body() dto: SetVariantOptionsDto,
+  ): Promise<{ variant: ProductVariant }> {
+    const variant = await this.productsService.setVariantOptions(id, dto.options);
+    return { variant };
+  }
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
-  @HttpCode(HttpStatus.NO_CONTENT)
   async deleteVariant(@Param('id') id: string): Promise<void> {
     await this.productsService.deleteVariant(id);
   }
