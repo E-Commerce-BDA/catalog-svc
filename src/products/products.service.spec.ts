@@ -132,6 +132,18 @@ describe('ProductsService', () => {
     expect(repository.findList).toHaveBeenCalledWith({});
   });
 
+  it('delegates an ids list to findList untouched', async () => {
+    repository.findList.mockResolvedValue({
+      data: [sampleListItem],
+      nextCursor: null,
+    });
+
+    const ids = ['11111111-1111-4111-8111-111111111111'];
+    const res = await service.getProducts({ ids });
+    expect(res.data).toEqual([sampleListItem]);
+    expect(repository.findList).toHaveBeenCalledWith({ ids });
+  });
+
   it('retrieves product detail by slug', async () => {
     repository.findDetail.mockResolvedValue(sampleDetail);
 

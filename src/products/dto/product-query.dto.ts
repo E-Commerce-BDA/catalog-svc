@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsIn,
   IsInt,
   IsNumber,
@@ -57,4 +58,23 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   includeInactive?: string;
+
+  /**
+   * Manual curation support (CMS `featured_products source:"manual"`): an
+   * explicit id list, `?ids=a,b` or repeated `?ids=a&ids=b`, max 24. When
+   * present the result follows the submitted order unless `sort` overrides
+   * it, and non-active ids simply never appear — the status floor stays.
+   */
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map((v) => String(v).trim())
+      : String(value)
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0),
+  )
+  @IsUUID('all', { each: true })
+  @ArrayMaxSize(24)
+  ids?: string[];
 }

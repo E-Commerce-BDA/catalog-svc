@@ -124,6 +124,16 @@ export class ProductsRepository {
       values.push(query.brandId);
     }
 
+    // Manual curation (CMS featured_products source:"manual"): the id list
+    // is a filter first and a default order second. The status floor above
+    // stays, so a draft or archived id can never be pulled into a page.
+    let idsParamIdx: number | null = null;
+    if (query.ids && query.ids.length > 0) {
+      idsParamIdx = idx++;
+      conditions.push(`p.id = ANY($${idsParamIdx}::uuid[])`);
+      values.push(query.ids);
+    }
+
     if (query.minPrice !== undefined) {
       conditions.push(`p.price >= $${idx++}`);
       values.push(query.minPrice);
@@ -151,6 +161,9 @@ export class ProductsRepository {
       orderBy = 'p.price DESC, p.id DESC';
     } else if (query.sort === 'name_asc') {
       orderBy = 'p.name ASC, p.id ASC';
+    } else if (!query.sort && idsParamIdx !== null) {
+      // No explicit sort with an id list: the admin's order is the order.
+      orderBy = `array_position($${idsParamIdx}::uuid[], p.id)`;
     }
 
     const sql = `
