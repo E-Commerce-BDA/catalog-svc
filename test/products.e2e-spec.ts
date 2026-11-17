@@ -114,6 +114,41 @@ describe('Products & PDP (e2e)', () => {
     }
   });
 
+  it('3a. a cursor walk never repeats a row across pages', async () => {
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < 4; page += 1) {
+      const url: string = cursor
+        ? `/api/v1/catalog/products?limit=2&cursor=${encodeURIComponent(cursor)}`
+        : '/api/v1/catalog/products?limit=2';
+      const res: { body: { data: Array<{ id: string }>; nextCursor: string | null } } =
+        await request(app.getHttpServer()).get(url).expect(200);
+      for (const item of res.body.data as Array<{ id: string }>) {
+        expect(seen.has(item.id)).toBe(false);
+        seen.add(item.id);
+      }
+      cursor = res.body.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen.size).toBeGreaterThan(2);
+  });
+
+  it('3b. a stale or malformed cursor is refused', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/catalog/products?cursor=not-a-cursor')
+      .expect(400);
+  });
+
+  it('3c. facets are derived from active rows', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/catalog/products/facets')
+      .expect(200);
+    expect(Array.isArray(res.body.tags)).toBe(true);
+    expect(typeof res.body.minPrice).toBe('number');
+    expect(typeof res.body.maxPrice).toBe('number');
+    expect(res.body.minPrice).toBeLessThanOrEqual(res.body.maxPrice);
+  });
+
   it('4. GET /api/v1/catalog/products/:slug returns rich PDP in single roundtrip', async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/catalog/products/fixture-tee')

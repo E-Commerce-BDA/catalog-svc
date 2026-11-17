@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 import type { ProductBadgeItem } from '../badges/badges.types.js';
 import { getPool } from '../db/pool.js';
 import { withTransaction, type QueryHandle } from '../db/tx.js';
+import {
+  computeProductQueryFingerprint,
+  decodeProductCursor,
+  encodeProductCursor,
+  resolveProductSort,
+} from './cursor.codec.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
@@ -15,6 +21,7 @@ import {
   computeEffectivePrice,
   ProductDetail,
   ProductDiscount,
+  ProductFacets,
   ProductImage,
   ProductListItem,
   ProductOption,
@@ -108,6 +115,12 @@ export class ProductsRepository {
     const values: unknown[] = [];
     let idx = 1;
 
+    const effectiveSort = resolveProductSort(query);
+    const fingerprint = computeProductQueryFingerprint(query);
+    const cursor = query.cursor
+      ? decodeProductCursor(query.cursor, fingerprint, effectiveSort)
+      : null;
+
     if (query.includeInactive !== 'true') {
       conditions.push(`p.status = 'active'`);
     } else if (query.status) {
@@ -161,25 +174,95 @@ export class ProductsRepository {
       values.push(query.q.trim());
     }
 
-    if (query.cursor) {
-      conditions.push(`p.id > $${idx++}`);
-      values.push(query.cursor);
+    let orderBy: string;
+    switch (effectiveSort) {
+      case 'price_asc':
+        orderBy = 'p.price ASC, p.id ASC';
+        break;
+      case 'price_desc':
+        orderBy = 'p.price DESC, p.id DESC';
+        break;
+      case 'name_asc':
+        orderBy = 'p.name ASC, p.id ASC';
+        break;
+      case 'rating_desc':
+        orderBy = 'rv.avg_rating DESC NULLS LAST, p.id DESC';
+        break;
+      case 'popularity_desc':
+        orderBy = 'p.popularity DESC, p.id DESC';
+        break;
+      case 'manual':
+        // No explicit sort with an id list: the admin's order is the order.
+        orderBy = `array_position($${idsParamIdx}::uuid[], p.id), p.id DESC`;
+        break;
+      default:
+        orderBy = 'p.created_at DESC, p.id DESC';
     }
 
-    let orderBy = 'p.created_at DESC, p.id DESC';
-    if (query.sort === 'price_asc') {
-      orderBy = 'p.price ASC, p.id ASC';
-    } else if (query.sort === 'price_desc') {
-      orderBy = 'p.price DESC, p.id DESC';
-    } else if (query.sort === 'name_asc') {
-      orderBy = 'p.name ASC, p.id ASC';
-    } else if (query.sort === 'rating_desc') {
-      orderBy = 'rv.avg_rating DESC NULLS LAST, p.id DESC';
-    } else if (query.sort === 'popularity_desc') {
-      orderBy = 'p.popularity DESC, p.id DESC';
-    } else if (!query.sort && idsParamIdx !== null) {
-      // No explicit sort with an id list: the admin's order is the order.
-      orderBy = `array_position($${idsParamIdx}::uuid[], p.id)`;
+    // Keyset continuation: every predicate is on the *same* columns the
+    // ORDER BY uses, so a page cannot repeat or skip a row. The id is always
+    // the final tie-breaker; NULL ratings sort last on rating_desc.
+    if (cursor !== null) {
+      switch (effectiveSort) {
+        case 'manual': {
+          const pos = idx++;
+          values.push(cursor.orderIndex ?? 0);
+          conditions.push(`array_position($${idsParamIdx}::uuid[], p.id) > $${pos}`);
+          break;
+        }
+        case 'created_desc': {
+          const created = idx++;
+          values.push(cursor.createdAt ?? '1970-01-01T00:00:00.000Z');
+          const id = idx++;
+          values.push(cursor.id);
+          conditions.push(
+            `(p.created_at, p.id) < ($${created}::timestamptz, $${id}::uuid)`,
+          );
+          break;
+        }
+        case 'price_asc':
+        case 'price_desc': {
+          const price = idx++;
+          values.push(cursor.price ?? 0);
+          const id = idx++;
+          values.push(cursor.id);
+          const cmp = effectiveSort === 'price_asc' ? '>' : '<';
+          conditions.push(`(p.price, p.id) ${cmp} ($${price}::numeric, $${id}::uuid)`);
+          break;
+        }
+        case 'name_asc': {
+          const name = idx++;
+          values.push(cursor.name ?? '');
+          const id = idx++;
+          values.push(cursor.id);
+          conditions.push(`(p.name, p.id) > ($${name}::text, $${id}::uuid)`);
+          break;
+        }
+        case 'rating_desc': {
+          const id = idx++;
+          values.push(cursor.id);
+          if (cursor.rating === null || cursor.rating === undefined) {
+            conditions.push(`rv.avg_rating IS NULL AND p.id < $${id}::uuid`);
+          } else {
+            const rating = idx++;
+            values.push(cursor.rating);
+            conditions.push(
+              `(rv.avg_rating < $${rating}::numeric OR (` +
+                `rv.avg_rating = $${rating}::numeric AND p.id < $${id}::uuid) ` +
+                `OR rv.avg_rating IS NULL)`,
+            );
+          }
+          break;
+        }
+        case 'popularity_desc': {
+          const pop = idx++;
+          values.push(cursor.popularity ?? 0);
+          const id = idx++;
+          values.push(cursor.id);
+          conditions.push(`(p.popularity, p.id) < ($${pop}::integer, $${id}::uuid)`);
+          break;
+        }
+      }
     }
 
     const sql = `
@@ -189,6 +272,7 @@ export class ProductsRepository {
              p.brand_id, b.name AS brand_name, b.slug AS brand_slug,
              pi.url AS primary_image_url,
              d.discount_type, d.value AS discount_value,
+             rv.avg_rating AS avg_rating,
              coalesce(bdg.badges, '[]'::jsonb) AS badges,
              coalesce(opt.card_options, '[]'::jsonb) AS card_options,
              coalesce(imgs.images, '[]'::jsonb) AS images,
@@ -324,7 +408,33 @@ export class ProductsRepository {
 
     const hasMore = rows.length > limit;
     const sliced = hasMore ? rows.slice(0, limit) : rows;
-    const nextCursor = hasMore ? sliced[sliced.length - 1].id : null;
+    const last = sliced[sliced.length - 1];
+    const nextCursor =
+      hasMore && last !== undefined
+        ? encodeProductCursor({
+            v: 1,
+            q: fingerprint,
+            sort: effectiveSort,
+            id: last.id,
+            ...(last.created_at !== undefined
+              ? { createdAt: new Date(last.created_at).toISOString() }
+              : {}),
+            ...(last.price !== undefined ? { price: Number(last.price) } : {}),
+            ...(last.name !== undefined ? { name: last.name } : {}),
+            ...(last.avg_rating !== undefined
+              ? {
+                  rating:
+                    last.avg_rating === null ? null : Number(last.avg_rating),
+                }
+              : {}),
+            ...(last.popularity !== undefined
+              ? { popularity: Number(last.popularity) }
+              : {}),
+            ...(effectiveSort === 'manual' && query.ids
+              ? { orderIndex: query.ids.indexOf(last.id) }
+              : {}),
+          })
+        : null;
 
     const data: ProductListItem[] = sliced.map((row) => {
       const basePrice = Number(row.price);
@@ -380,6 +490,45 @@ export class ProductsRepository {
     });
 
     return { data, nextCursor };
+  }
+
+  /**
+   * Distinct facet values over active products, optionally narrowed by
+   * category/brand. Derived from rows, never seeded — a tag the rail offers
+   * is a tag a real product carries.
+   */
+  async findFacets(filter: {
+    categoryId?: string;
+    brandId?: string;
+  }): Promise<ProductFacets> {
+    const pool = getPool();
+    const { rows } = await pool.query<{
+      tags: string[] | null;
+      min_price: string | number | null;
+      max_price: string | number | null;
+    }>(
+      `SELECT
+         COALESCE(array_agg(DISTINCT t.tag) FILTER (WHERE t.tag IS NOT NULL), '{}') AS tags,
+         min(p.price) AS min_price,
+         max(p.price) AS max_price
+       FROM catalog.products p
+       LEFT JOIN LATERAL unnest(p.tags) AS t(tag) ON true
+       WHERE p.deleted_at IS NULL
+         AND p.status = 'active'
+         AND ($1::uuid IS NULL OR p.category_id = $1)
+         AND ($2::uuid IS NULL OR p.brand_id = $2);`,
+      [filter.categoryId ?? null, filter.brandId ?? null],
+    );
+    const row = rows[0];
+    return {
+      tags: Array.isArray(row?.tags) ? row.tags : [],
+      minPrice: row?.min_price !== null && row?.min_price !== undefined
+        ? Number(row.min_price)
+        : null,
+      maxPrice: row?.max_price !== null && row?.max_price !== undefined
+        ? Number(row.max_price)
+        : null,
+    };
   }
 
   async findDetail(

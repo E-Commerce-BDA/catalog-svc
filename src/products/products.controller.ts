@@ -20,12 +20,14 @@ import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { CreateVariantDto } from './dto/create-variant.dto.js';
+import { ProductFacetsQueryDto } from './dto/product-facets-query.dto.js';
 import { ProductQueryDto } from './dto/product-query.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 import { ProductsService } from './products.service.js';
 import {
   ProductDetail,
   ProductDiscount,
+  ProductFacets,
   ProductImage,
   ProductListItem,
   ProductOption,
@@ -51,6 +53,14 @@ export class ProductsController {
   ): Promise<{ product: ProductDetail }> {
     const product = await this.productsService.getProductById(id);
     return { product };
+  }
+
+  @Get('facets')
+  @Header('Cache-Control', 'public, max-age=60')
+  async getFacets(
+    @Query() query: ProductFacetsQueryDto,
+  ): Promise<ProductFacets> {
+    return this.productsService.getFacets(query);
   }
 
   @Get(':slug')

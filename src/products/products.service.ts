@@ -7,6 +7,7 @@ import {
 import { slugify } from '../categories/categories.service.js';
 import { withTransaction, type QueryHandle } from '../db/tx.js';
 import { CatalogOutbox } from '../outbox/catalog-outbox.js';
+import { CursorValidationError } from './cursor.codec.js';
 import { CreateDiscountDto } from './dto/create-discount.dto.js';
 import { CreateImageDto } from './dto/create-image.dto.js';
 import { CreateOptionDto, UpdateOptionDto } from './dto/create-option.dto.js';
@@ -20,6 +21,7 @@ import { ProductsRepository } from './products.repository.js';
 import {
   ProductDetail,
   ProductDiscount,
+  ProductFacets,
   ProductImage,
   ProductListItem,
   ProductOption,
@@ -36,7 +38,24 @@ export class ProductsService {
   async getProducts(
     query: ProductQueryDto = {},
   ): Promise<{ data: ProductListItem[]; nextCursor: string | null }> {
-    return this.repository.findList(query);
+    try {
+      return await this.repository.findList(query);
+    } catch (error) {
+      if (error instanceof CursorValidationError) {
+        throw new BadRequestException({
+          code: 'CURSOR_INVALID',
+          message: error.message,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async getFacets(filter: {
+    categoryId?: string;
+    brandId?: string;
+  }): Promise<ProductFacets> {
+    return this.repository.findFacets(filter);
   }
 
   async getProductBySlug(slug: string): Promise<ProductDetail> {

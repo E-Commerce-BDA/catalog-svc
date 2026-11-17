@@ -83,6 +83,13 @@ export interface ProductListItem {
   cardVariants?: Array<{ id: string; sku: string; price: number; compareAtPrice?: number | null; stock: number; imageUrl?: string | null; optionValues: Record<string, string> }>;
 }
 
+/** Facet values for the listing filter rail, derived from real active rows. */
+export interface ProductFacets {
+  tags: string[];
+  minPrice: number | null;
+  maxPrice: number | null;
+}
+
 export interface ProductVariantOptionValue {
   optionId: string;
   optionName: string;
