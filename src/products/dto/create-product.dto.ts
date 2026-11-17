@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -93,4 +94,10 @@ export class CreateProductDto {
   @IsInt()
   @Min(0)
   weightG?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000)
+  popularity?: number;
 }

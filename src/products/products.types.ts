@@ -72,6 +72,9 @@ export interface ProductListItem {
   images?: Array<{ id: string; url: string; alt?: string | null; isPrimary: boolean; sortOrder: number }>;
   tags: string[];
   effectivePrice: number;
+  rating: number | null;
+  ratingCount: number;
+  popularity: number;
   createdAt: string;
   updatedAt: string;
   cardSettings?: Record<string, unknown>;
@@ -156,6 +159,7 @@ export interface ProductDetail {
   category: { id: string; name: string; slug: string } | null;
   brand: { id: string; name: string; slug: string; logoUrl: string | null } | null;
   tags: string[];
+  popularity: number;
   attributes: Record<string, unknown>;
   photoSettings: Record<string, unknown>;
   cardSettings?: Record<string, unknown>;

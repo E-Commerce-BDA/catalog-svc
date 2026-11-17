@@ -8,6 +8,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -48,8 +49,39 @@ export class ProductQueryDto {
   maxPrice?: number;
 
   @IsOptional()
-  @IsIn(['price_asc', 'price_desc', 'created_desc', 'name_asc'])
-  sort?: 'price_asc' | 'price_desc' | 'created_desc' | 'name_asc';
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map((v) => String(v).trim()).filter((v) => v.length > 0)
+      : String(value)
+          .split(',')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0),
+  )
+  @IsString({ each: true })
+  @ArrayMaxSize(10)
+  @MaxLength(50, { each: true })
+  tags?: string[];
+
+  @IsOptional()
+  @IsString()
+  discounted?: string;
+
+  @IsOptional()
+  @IsIn([
+    'price_asc',
+    'price_desc',
+    'created_desc',
+    'name_asc',
+    'rating_desc',
+    'popularity_desc',
+  ])
+  sort?:
+    | 'price_asc'
+    | 'price_desc'
+    | 'created_desc'
+    | 'name_asc'
+    | 'rating_desc'
+    | 'popularity_desc';
 
   @IsOptional()
   @IsString()

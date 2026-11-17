@@ -94,6 +94,7 @@ interface RawPdpRow {
     endsAt: string;
     isActive: boolean;
   } | null;
+  popularity?: number;
 }
 
 @Injectable()
@@ -144,6 +145,17 @@ export class ProductsRepository {
       values.push(query.maxPrice);
     }
 
+    if (query.tags && query.tags.length > 0) {
+      conditions.push(`p.tags @> $${idx++}::varchar[]`);
+      values.push(query.tags);
+    }
+
+    if (query.discounted === 'true') {
+      // The active-discount lateral `d` is already joined above, so an
+      // active discount row is the same condition effectivePrice uses.
+      conditions.push(`d.discount_type IS NOT NULL`);
+    }
+
     if (query.q && query.q.trim().length > 0) {
       conditions.push(`p.search_vector @@ plainto_tsquery('english', $${idx++})`);
       values.push(query.q.trim());
@@ -161,6 +173,10 @@ export class ProductsRepository {
       orderBy = 'p.price DESC, p.id DESC';
     } else if (query.sort === 'name_asc') {
       orderBy = 'p.name ASC, p.id ASC';
+    } else if (query.sort === 'rating_desc') {
+      orderBy = 'rv.avg_rating DESC NULLS LAST, p.id DESC';
+    } else if (query.sort === 'popularity_desc') {
+      orderBy = 'p.popularity DESC, p.id DESC';
     } else if (!query.sort && idsParamIdx !== null) {
       // No explicit sort with an id list: the admin's order is the order.
       orderBy = `array_position($${idsParamIdx}::uuid[], p.id)`;
@@ -168,7 +184,7 @@ export class ProductsRepository {
 
     const sql = `
       SELECT p.id, p.sku, p.name, p.slug, p.short_description, p.price,
-             p.compare_at_price, p.stock, p.status, p.tags, p.card_settings, p.created_at, p.updated_at,
+             p.compare_at_price, p.stock, p.status, p.tags, p.popularity, p.card_settings, p.created_at, p.updated_at,
              p.category_id, c.name AS category_name, c.slug AS category_slug,
              p.brand_id, b.name AS brand_name, b.slug AS brand_slug,
              pi.url AS primary_image_url,
@@ -286,6 +302,11 @@ export class ProductsRepository {
           WHERE pvov.variant_id = pv.id
         ) v_opts ON true
       ) vars ON true
+      LEFT JOIN LATERAL (
+        SELECT avg(r.rating) AS avg_rating, count(r.id) AS rating_count
+        FROM catalog.reviews r
+        WHERE r.product_id = p.id AND r.is_approved = true
+      ) rv ON true
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${orderBy}
       LIMIT ${limit + 1};
@@ -295,6 +316,9 @@ export class ProductsRepository {
       ProductRow & {
         discount_type?: 'percent' | 'fixed';
         discount_value?: string | number;
+         avg_rating?: string | number | null;
+         rating_count?: string | number;
+         popularity?: number;
       }
     >(sql, values);
 
@@ -332,6 +356,15 @@ export class ProductsRepository {
         brandSlug: row.brand_slug ?? null,
         primaryImageUrl: row.primary_image_url ?? null,
         tags: Array.isArray(row.tags) ? row.tags : [],
+        rating:
+          row.avg_rating !== null && row.avg_rating !== undefined
+            ? Number(row.avg_rating)
+            : null,
+        ratingCount:
+          row.rating_count !== null && row.rating_count !== undefined
+            ? Number(row.rating_count)
+            : 0,
+        popularity: Number(row.popularity ?? 0),
         cardSettings: row.card_settings ?? {},
         badges: row.badges ?? [],
         cardOptions: row.card_options ?? [],
@@ -372,7 +405,7 @@ export class ProductsRepository {
       )
       SELECT
         prod.id, prod.sku, prod.name, prod.slug, prod.short_description, prod.description,
-        prod.price, prod.compare_at_price, prod.stock, prod.status, prod.tags,
+        prod.price, prod.compare_at_price, prod.stock, prod.status, prod.tags, prod.popularity,
         prod.attributes, prod.photo_settings, prod.card_settings, prod.created_at, prod.updated_at,
         CASE WHEN prod.category_id IS NOT NULL THEN
           jsonb_build_object('id', prod.category_id, 'name', prod.cat_name, 'slug', prod.cat_slug)
@@ -535,6 +568,7 @@ export class ProductsRepository {
       category: raw.category,
       brand: raw.brand,
       tags: Array.isArray(raw.tags) ? raw.tags : [],
+       popularity: Number(raw.popularity ?? 0),
       attributes:
         raw.attributes && typeof raw.attributes === 'object'
           ? raw.attributes
@@ -599,9 +633,9 @@ export class ProductsRepository {
       `INSERT INTO catalog.products (
          sku, name, slug, short_description, description, category_id, brand_id,
          price, compare_at_price, stock, status, tags, attributes, photo_settings,
-         card_settings, source, external_id, weight_g
+         card_settings, source, external_id, weight_g, popularity
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
        )
        RETURNING id;`,
       [
@@ -623,6 +657,7 @@ export class ProductsRepository {
         dto.source ?? 'local',
         dto.externalId ?? null,
         dto.weightG ?? null,
+        dto.popularity ?? 0,
       ],
     );
 
@@ -702,6 +737,10 @@ export class ProductsRepository {
     if (dto.weightG !== undefined) {
       fields.push(`weight_g = $${idx++}`);
       values.push(dto.weightG);
+    }
+    if (dto.popularity !== undefined) {
+      fields.push(`popularity = $${idx++}`);
+      values.push(dto.popularity);
     }
 
     if (fields.length > 0) {

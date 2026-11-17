@@ -36,6 +36,9 @@ describe('ProductsController', () => {
     brandSlug: 'acme-essentials',
     primaryImageUrl: '/images/fixture-tee.jpg',
     tags: ['apparel', 'cotton'],
+    rating: null,
+    ratingCount: 0,
+    popularity: 0,
     createdAt: '2026-10-27T00:00:00.000Z',
     updatedAt: '2026-10-27T00:00:00.000Z',
   };
@@ -55,6 +58,7 @@ describe('ProductsController', () => {
     category: { id: '0190a8b0-0000-7000-8000-000000000003', name: 'T-Shirts', slug: 't-shirts' },
     brand: { id: '0190a8b0-0000-7000-8000-000000000011', name: 'Acme Essentials', slug: 'acme-essentials', logoUrl: null },
     tags: ['apparel'],
+    popularity: 0,
     attributes: {},
     photoSettings: {},
     images: [],
